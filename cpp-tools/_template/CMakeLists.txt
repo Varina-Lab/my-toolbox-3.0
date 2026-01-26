@@ -27,4 +27,4 @@ if(MSVC)
 endif()
 
 # Định nghĩa file exe đầu ra
-add_executable(app_main main.cpp)
+add_executable(app_main src/main.cpp)

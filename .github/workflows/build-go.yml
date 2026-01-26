@@ -28,24 +28,19 @@ jobs:
       - name: Build (Optimized)
         shell: pwsh
         run: |
-          # Di chuyển vào thư mục tool
           cd ${{ inputs.tool_name }}
 
-          # Tải dependencies nếu có (nếu bạn thêm thư viện ngoài)
           if (Test-Path "go.sum") {
             go mod download
           } else {
-            # Nếu chưa có go.sum (lần đầu), chạy tidy để auto-fix
             go mod tidy
           }
 
-          # Tạo thư mục output
           New-Item -ItemType Directory -Force -Path "../../dist" | Out-Null
 
-          # BUILD LỆNH:
-          # -ldflags "-s -w": Loại bỏ bảng ký hiệu và thông tin debug (Giảm dung lượng file tối đa)
-          # -o: Chỉ định tên file đầu ra trực tiếp
-          go build -ldflags "-s -w" -o "../../dist/${{ inputs.tool_name }}.exe" .
+          # SỬA DÒNG NÀY: Thêm ./src vào cuối lệnh build
+          # Go sẽ tìm file main.go trong folder src
+          go build -ldflags "-s -w" -o "../../dist/${{ inputs.tool_name }}.exe" ./src
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
