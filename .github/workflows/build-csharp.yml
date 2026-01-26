@@ -1,0 +1,69 @@
+name: Build C# (Native AOT)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tên thư mục (Ví dụ: _template)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ./csharp-tools
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Publish Native AOT
+        shell: pwsh
+        run: |
+          $toolPath = "${{ inputs.tool_name }}"
+          
+          # Tìm file .csproj trong thư mục tool (bất kể tên là gì)
+          $projectFile = Get-ChildItem "$toolPath/*.csproj" | Select-Object -First 1
+          
+          if (-not $projectFile) {
+            Write-Error "Không tìm thấy file .csproj trong $toolPath"
+            exit 1
+          }
+
+          # Lệnh Publish:
+          # -c Release: Tối ưu hóa
+          # -r win-x64: Chỉ định chạy trên Windows 64-bit
+          # /p:AssemblyName: Đặt tên file exe đầu ra trùng với tên tool
+          dotnet publish $projectFile.FullName -c Release -r win-x64 /p:AssemblyName=${{ inputs.tool_name }}
+
+      - name: Prepare Artifact
+        shell: pwsh
+        run: |
+          # Đường dẫn output của Native AOT khá sâu
+          # Thường là: bin/Release/net9.0/win-x64/publish/
+          $sourcePath = "${{ inputs.tool_name }}/bin/Release/net9.0/win-x64/publish/${{ inputs.tool_name }}.exe"
+          
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+
+          if (Test-Path $sourcePath) {
+             # Copy ra folder dist
+             Copy-Item $sourcePath -Destination "dist/${{ inputs.tool_name }}.exe"
+             Write-Host "Build thành công: dist/${{ inputs.tool_name }}.exe"
+          } else {
+             Write-Error "Không tìm thấy file EXE sau khi build tại $sourcePath"
+             exit 1
+          }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.tool_name }}_csharp
+          path: dist/*.exe
+          if-no-files-found: error
