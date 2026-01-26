@@ -2,42 +2,56 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Text;
+using System.Diagnostics;
 
 public class PrimeGenerator
 {
     public static void Main()
     {
-        Console.Write("Nhập số N: ");
-        if (int.TryParse(Console.ReadLine(), out int n) && n > 2)
+        Console.Write("Nhap vao so N: ");
+        if (int.TryParse(Console.ReadLine(), out int n))
         {
-            var primes = GetPrimesUnder(n);
-            
-            // Sử dụng StringBuilder để tối ưu việc in dữ liệu lớn ra Console
+            // Bat dau do thoi gian
+            Stopwatch sw = Stopwatch.StartNew();
+
+            List<int> primes = GetPrimesUnder(n);
+
+            sw.Stop();
+
+            // In ket qua
             StringBuilder sb = new StringBuilder();
             foreach (int p in primes)
             {
                 sb.Append(p).Append(" ");
             }
+            
+            Console.WriteLine("\nCac so nguyen to nho hon " + n + ":");
             Console.WriteLine(sb.ToString());
+            
+            Console.WriteLine("\n-------------------------------------------");
+            Console.WriteLine("Thoi gian thuc thi: " + sw.Elapsed.TotalMilliseconds + " ms");
+            Console.WriteLine("Tong cong co: " + primes.Count + " so nguyen to.");
         }
         else
         {
-            Console.WriteLine("Vui lòng nhập số nguyên lớn hơn 2.");
+            Console.WriteLine("Du lieu nhap vao khong hop le.");
         }
+
+        // Dung man hinh de xem ket qua
+        Console.WriteLine("\nNhan phim bat ky de thoat...");
+        Console.ReadKey();
     }
 
-    /// <summary>
-    /// Tìm tất cả các số nguyên tố nhỏ hơn n bằng thuật toán Sàng Eratosthenes tối ưu.
-    /// </summary>
     public static List<int> GetPrimesUnder(int n)
     {
-        if (n <= 2) return new List<int>();
+        if (n <= 2) return (n == 2) ? new List<int>() : new List<int>();
+        if (n == 3) return new List<int> { 2 };
 
-        // BitArray giúp tiết kiệm bộ nhớ (1 bit/phần tử thay vì 1-4 bytes)
-        // Chỉ lưu trữ các số lẻ để giảm một nửa dung lượng bộ nhớ
+        // Toi uu: Chi xet cac so le
         int size = (n - 1) / 2;
         BitArray isPrime = new BitArray(size + 1, true);
-        List<int> primes = new List<int>(n / 10) { 2 }; // Khởi tạo với số 2
+        List<int> primes = new List<int>(n / 10); 
+        primes.Add(2);
 
         int sqrtN = (int)Math.Sqrt(n);
 
@@ -46,9 +60,11 @@ public class PrimeGenerator
             if (isPrime[i])
             {
                 int p = 2 * i + 1;
+                if (p >= n) break;
+                
                 primes.Add(p);
 
-                // Loại bỏ các bội số của p, bắt đầu từ p*p để tránh trùng lặp
+                // Sang cac boi so cua p
                 if (p <= sqrtN)
                 {
                     for (int j = 2 * i * (i + 1); j <= size; j += p)
@@ -58,7 +74,6 @@ public class PrimeGenerator
                 }
             }
         }
-
         return primes;
     }
 }
