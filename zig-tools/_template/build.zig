@@ -7,10 +7,12 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "tool_app", // Tên file tạm, GH Actions sẽ đổi tên sau
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .name = "prime-generator-zig", // Tên file tạm, GH Actions sẽ đổi tên sau
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     // Cấu hình để loại bỏ symbol thừa (strip) nếu là Release
