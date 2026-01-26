@@ -34,59 +34,59 @@ mod win_api {
     extern "system" {
         pub fn ShowWindow(hwnd: *mut c_void, nCmdShow: i32) -> bool;
         pub fn SetForegroundWindow(hwnd: *mut c_void) -> bool;
-        pub fn AllowSetForegroundWindow(dwProcessId: u32) -> bool;
         pub fn GetForegroundWindow() -> *mut c_void;
         pub fn GetWindowThreadProcessId(hwnd: *mut c_void, lpdwProcessId: *mut u32) -> u32;
         pub fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: bool) -> bool;
-        pub fn BringWindowToTop(hwnd: *mut c_void) -> bool;
     }
 
     pub fn hide() {
         unsafe {
             let hwnd = GetConsoleWindow();
-            // 0 = SW_HIDE (Ẩn hoàn toàn khỏi taskbar và màn hình)
+            // 0 = SW_HIDE: Ẩn hoàn toàn
             if !hwnd.is_null() { ShowWindow(hwnd, 0); } 
         }
     }
 
     pub fn focus() {
         unsafe {
-            // Đảm bảo console tồn tại
             AllocConsole();
             let hwnd = GetConsoleWindow();
             
             if !hwnd.is_null() {
-                // Bước 1: Hiện cửa sổ lên trước (SW_RESTORE = 9)
-                ShowWindow(hwnd, 9); 
-
-                // Bước 2: Kỹ thuật "Force Focus"
-                // Lấy ID của luồng đang giữ focus hiện tại (ví dụ: Explorer, Desktop...)
+                // Lấy thông tin luồng đang chiếm màn hình (Explorer/Desktop/Game vừa tắt)
                 let foreground_hwnd = GetForegroundWindow();
                 let current_thread_id = GetCurrentThreadId();
                 let foreground_thread_id = GetWindowThreadProcessId(foreground_hwnd, std::ptr::null_mut());
 
-                // Nếu cửa sổ hiện tại không phải là chính mình, thực hiện "móc nối"
-                if foreground_thread_id != current_thread_id {
-                    // Mượn quyền input của cửa sổ đang active
+                // Nếu không phải chính mình đang focus, cần "mượn" quyền input
+                let need_attach = foreground_thread_id != current_thread_id;
+
+                if need_attach {
                     AttachThreadInput(foreground_thread_id, current_thread_id, true);
-                    
-                    // Đẩy cửa sổ console lên đỉnh stack hiển thị
-                    BringWindowToTop(hwnd);
-                    
-                    // Set focus
-                    SetForegroundWindow(hwnd);
-                    
-                    // Trả lại quyền input (ngắt kết nối)
+                }
+
+                // SỬA ĐỔI QUAN TRỌNG:
+                // 1. Dùng 1 (SW_SHOWNORMAL) thay vì 9 (SW_RESTORE).
+                //    Nó giúp cửa sổ hiện lên tự nhiên như khi mới mở app.
+                ShowWindow(hwnd, 1); 
+
+                // 2. Chỉ dùng SetForegroundWindow, BỎ BringWindowToTop.
+                //    Để Windows tự xử lý animation (zoom/fade) thay vì ép hiện lên thô bạo.
+                SetForegroundWindow(hwnd);
+                
+                if need_attach {
                     AttachThreadInput(foreground_thread_id, current_thread_id, false);
-                } else {
-                    // Nếu đang có quyền rồi thì cứ set bình thường
-                    SetForegroundWindow(hwnd);
                 }
             }
         }
     }
 
     pub fn grant_focus() {
+        // Hàm này giữ nguyên, dùng để cho phép game con chiếm quyền focus
+        #[link(name = "user32")]
+        extern "system" {
+            fn AllowSetForegroundWindow(dwProcessId: u32) -> bool;
+        }
         unsafe { AllowSetForegroundWindow(0xFFFFFFFF); }
     }
 }
