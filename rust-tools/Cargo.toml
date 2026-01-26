@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["*"]
+exclude = ["_template"]
+
+# --- MAX PERFORMANCE PROFILE ---
+[profile.release]
+opt-level = 3        # Mức tối ưu cao nhất (Speed)
+lto = "fat"          # Link Time Optimization toàn diện
+codegen-units = 1    # Giảm song song khi build để compiler tối ưu kỹ hơn
+panic = "abort"      # Loại bỏ overhead của unwind stack, giúp exe nhẹ và nhanh hơn
+strip = true         # Xóa sạch debug và symbols để file có dung lượng nhỏ nhất
