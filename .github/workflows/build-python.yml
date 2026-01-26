@@ -1,4 +1,4 @@
-name: Build Python (Native EXE - No Runtime)
+name: Build Python (Native EXE)
 
 on:
   workflow_dispatch:
@@ -28,28 +28,29 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
+          # zstandard giúp nén file onefile tốt hơn và nhanh hơn
           python -m pip install nuitka zstandard
           if (Test-Path "${{ inputs.tool_name }}/requirements.txt") {
             python -m pip install -r ${{ inputs.tool_name }}/requirements.txt
           }
 
-      - name: Build with Nuitka (Static Linking via MinGW)
+      - name: Build with Nuitka
         shell: pwsh
         run: |
           $toolName = "${{ inputs.tool_name }}"
           cd $toolName
           
-          # GIẢI PHÁP: 
-          # 1. --mingw64: Ép sử dụng MinGW thay vì MSVC để tránh phụ thuộc VC++ Redist.
-          # 2. --standalone & --onefile: Đóng gói mọi thứ.
-          # 3. --static-libpython=yes: Link tĩnh thư viện lõi Python.
-          
+          # Cấu hình Nuitka tối ưu cho tính di động:
+          # --mingw64: Sử dụng trình biên dịch MinGW để giảm sự phụ thuộc vào MSVC compiler
+          # --standalone: Tạo thư mục chứa mọi thứ cần thiết để chạy
+          # --onefile: Đóng gói toàn bộ thư mục standalone thành 1 file duy nhất
+          # --lto=yes: Tối ưu hóa hiệu năng
+          # --assume-yes-for-downloads: Tự động tải compiler nếu cần
           python -m nuitka `
             --mingw64 `
             --standalone `
             --onefile `
             --lto=yes `
-            --static-libpython=yes `
             --assume-yes-for-downloads `
             --output-filename="$toolName.exe" `
             --output-dir="out" `
@@ -59,15 +60,20 @@ jobs:
         shell: pwsh
         run: |
           $toolName = "${{ inputs.tool_name }}"
-          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
           
+          # Tạo folder dist để chứa thành phẩm
+          if (-not (Test-Path "dist")) {
+              New-Item -ItemType Directory -Path "dist" | Out-Null
+          }
+          
+          # Tìm file EXE trong thư mục out
           $exePath = "$toolName/out/$toolName.exe"
           
           if (Test-Path $exePath) {
-             Write-Host "Found Static Python EXE: $exePath"
+             Write-Host "Build thành công. Đang copy artifact..."
              Copy-Item $exePath -Destination "dist/$toolName.exe"
           } else {
-             Write-Error "Build failed! EXE not found."
+             Write-Error "Lỗi: Không tìm thấy file EXE tại $exePath"
              exit 1
           }
 
