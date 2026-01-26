@@ -28,6 +28,8 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
+          # Nuitka: Trình biên dịch Python sang C++
+          # zstandard: Giúp nén file EXE nhỏ hơn
           python -m pip install nuitka zstandard
           if (Test-Path "${{ inputs.tool_name }}/requirements.txt") {
             python -m pip install -r ${{ inputs.tool_name }}/requirements.txt
@@ -39,12 +41,12 @@ jobs:
           $toolName = "${{ inputs.tool_name }}"
           cd $toolName
           
-          # Lệnh biên dịch Nuitka:
+          # Lệnh biên dịch Nuitka tối ưu:
           # --standalone: Chạy không cần cài Python
-          # --onefile: Đóng gói tất cả vào 1 file EXE duy nhất
-          # --lto=yes: Tối ưu hóa hiệu năng tối đa
-          # --output-dir=build: Thư mục chứa file build
-          # --assume-yes-for-downloads: Tự động tải các công cụ cần thiết (như MinGW/C compiler)
+          # --onefile: Đóng gói tất cả (bao gồm cả thư viện) vào 1 file EXE duy nhất
+          # --lto=yes: Tối ưu hóa liên kết toàn cục (tăng tốc độ chạy)
+          # --assume-yes-for-downloads: Tự động tải C compiler nếu thiếu
+          # --windows-disable-console: (Tùy chọn) Thêm nếu bạn làm tool có giao diện (GUI), hiện tại để mặc định Console
           python -m nuitka `
             --standalone `
             --onefile `
@@ -58,9 +60,24 @@ jobs:
         shell: pwsh
         run: |
           $toolName = "${{ inputs.tool_name }}"
+          
+          # 1. Tạo folder dist ở thư mục python-tools
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
           
+          # 2. Đường dẫn file exe sau khi Nuitka build xong
           $exePath = "$toolName/out/$toolName.exe"
           
           if (Test-Path $exePath) {
-             Copy-Item $exePath
+             Write-Host "Found Python EXE: $exePath"
+             Copy-Item $exePath -Destination "dist/$toolName.exe"
+          } else {
+             Write-Error "Build failed! EXE not found at $exePath"
+             exit 1
+          }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.tool_name }}_python
+          path: python-tools/dist/*.exe
+          if-no-files-found: error
