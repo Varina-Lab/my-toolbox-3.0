@@ -1,0 +1,53 @@
+name: Build C++
+
+on:
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tên thư mục của Tool (Ví dụ: _template)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        # Tạo folder build tạm thời và cấu hình Release
+        run: cmake -S cpp-tools/${{ inputs.tool_name }} -B cpp-tools/${{ inputs.tool_name }}/build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        # Thực hiện biên dịch
+        run: cmake --build cpp-tools/${{ inputs.tool_name }}/build --config Release
+
+      - name: Prepare Artifact
+        shell: pwsh
+        run: |
+          # Tạo folder dist
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          
+          # Đường dẫn file exe do CMake tạo ra (thường nằm trong build/Release)
+          $sourcePath = "cpp-tools/${{ inputs.tool_name }}/build/Release/*.exe"
+          
+          # Tìm và đổi tên file
+          $exeFile = Get-ChildItem $sourcePath | Select-Object -First 1
+          
+          if ($exeFile) {
+            Write-Host "Found exe: $($exeFile.Name)"
+            # Đổi tên file thành tên tool người dùng nhập
+            Copy-Item $exeFile.FullName -Destination "dist/${{ inputs.tool_name }}.exe"
+          } else {
+            Write-Error "Build Success but EXE not found!"
+            exit 1
+          }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.tool_name }}_cpp
+          path: dist/*.exe
+          if-no-files-found: error
