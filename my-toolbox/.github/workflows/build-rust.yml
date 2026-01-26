@@ -1,0 +1,59 @@
+name: Build Rust
+
+on:
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tên thư mục (Ví dụ: auto-clicker)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ./rust-tools
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Dùng Cache chuyên dụng cho Rust (Nhanh hơn actions/cache thường)
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-tools
+
+      - name: Build Release
+        shell: pwsh
+        run: |
+          # 1. Dọn dẹp file exe cũ trong target để tránh nhầm lẫn (do cache lưu lại)
+          # Folder target của workspace nằm ở rust-tools/target/release
+          if (Test-Path "target/release/*.exe") {
+            Remove-Item "target/release/*.exe" -Force
+          }
+
+          # 2. Build đúng cái tool được chỉ định
+          cargo build --release --manifest-path ${{ inputs.tool_name }}/Cargo.toml
+
+          # 3. Tạo folder dist để chứa thành phẩm
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+
+          # 4. Tìm file exe vừa tạo ra (Bất kể tên trong Cargo.toml là gì) và đổi tên chuẩn
+          $exeFile = Get-ChildItem "target/release/*.exe" | Select-Object -First 1
+          if ($exeFile) {
+            Write-Host "Found build artifact: $($exeFile.Name)"
+            # Copy và đổi tên thành tên tool bạn nhập (VD: auto-clicker.exe)
+            Copy-Item $exeFile.FullName -Destination "dist/${{ inputs.tool_name }}.exe"
+          } else {
+            Write-Error "Build failed or no EXE found!"
+            exit 1
+          }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.tool_name }}_rust
+          path: rust-tools/dist/*.exe
+          if-no-files-found: error
