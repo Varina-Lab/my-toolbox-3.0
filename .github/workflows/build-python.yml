@@ -1,4 +1,4 @@
-name: Build Python (Nuitka)
+name: Build Python (Nuitka Standalone)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12' # Bản ổn định và nhanh nhất hiện nay
+          python-version: '3.12'
           cache: 'pip'
 
       - name: Install Dependencies
@@ -30,31 +30,34 @@ jobs:
             pip install -r python-tools/${{ inputs.tool_name }}/requirements.txt
           }
 
-      - name: Build with Nuitka
+      - name: Build with Nuitka (Portable Mode)
         shell: pwsh
         run: |
           $toolName = "${{ inputs.tool_name }}"
           cd python-tools/$toolName
 
-          # Lệnh biên dịch Nuitka:
-          # --standalone: Tạo thư mục chứa đủ mọi thứ để chạy
-          # --onefile: Đóng gói tất cả thành 1 file EXE duy nhất
-          # --assume-yes-for-downloads: Tự động tải các công cụ hỗ trợ (như MinGW/Dependency Walker)
-          # --output-dir: Nơi chứa file sau khi build
-          python -m nuitka --standalone --onefile --assume-yes-for-downloads --output-dir=build src/main.py
+          # THAY ĐỔI QUAN TRỌNG Ở ĐÂY:
+          # --mingw64: Ép Nuitka dùng MinGW thay vì MSVC để tránh phụ thuộc VC++ Redist
+          # --standalone & --onefile: Đóng gói tất cả vào 1 file
+          # --assume-yes-for-downloads: Tự động tải MinGW về runner
+          python -m nuitka `
+            --standalone `
+            --onefile `
+            --mingw64 `
+            --assume-yes-for-downloads `
+            --output-dir=build `
+            src/main.py
 
       - name: Prepare Artifact
         shell: pwsh
         run: |
           $toolName = "${{ inputs.tool_name }}"
-          
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
           
-          # File sau khi build nằm trong thư mục build/
+          # Nuitka sẽ tạo file main.exe trong thư mục build/
           $exePath = "python-tools/$toolName/build/main.exe"
           
           if (Test-Path $exePath) {
-             Write-Host "Found Python EXE: $exePath"
              Copy-Item $exePath -Destination "dist/$toolName.exe"
           } else {
              Write-Error "Build failed! EXE not found."
@@ -66,4 +69,3 @@ jobs:
         with:
           name: ${{ inputs.tool_name }}_python
           path: dist/*.exe
-          if-no-files-found: error
