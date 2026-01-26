@@ -1,65 +1,60 @@
 import time
 import sys
 
-def sieve_of_eratosthenes(n):
-    """
-    Sử dụng thuật toán Sàng Eratosthenes tối ưu hóa bộ nhớ
-    Trả về danh sách các số nguyên tố nhỏ hơn n
-    """
-    if n <= 2:
-        return []
+def sieve_optimized(n):
+    """Sàng Eratosthenes tối ưu: chỉ sàng số lẻ, dùng bytearray"""
+    if n < 2: return []
+    if n == 2: return [2]
     
-    # Khởi tạo mảng đánh dấu bằng bytearray để tiết kiệm bộ nhớ (True = 1)
-    # Chỉ xét các số lẻ để giảm một nửa dung lượng bộ nhớ và số vòng lặp
-    sieve_size = n // 2
-    primes_mask = bytearray([1]) * sieve_size
-    primes_mask[0] = 0 # Số 1 không phải số nguyên tố
+    # Chỉ quản lý các số lẻ: 3, 5, 7... (n-1 nếu n chẵn)
+    size = (n - 1) // 2
+    sieve = bytearray([1]) * (size + 1)
     
-    # Chỉ lặp đến căn bậc hai của n
     for i in range(1, int(n**0.5) // 2 + 1):
-        if primes_mask[i]:
-            # Đánh dấu các bội số của số nguyên tố hiện tại là False
-            # Bắt đầu từ bình phương của số đó
+        if sieve[i]:
+            # Chỉ số k tương ứng với số 2i + 1
+            # Bắt đầu đánh dấu từ (2i+1)^2
             start = 2 * i * (i + 1)
             step = 2 * i + 1
-            primes_mask[start:sieve_size:step] = bytearray((sieve_size - start - 1) // step + 1)
+            sieve[start::step] = bytearray((size - start) // step + 1)
             
-    # Chuyển đổi mask thành danh sách số thực tế
-    primes = [2] + [2 * i + 1 for i in range(1, sieve_size) if primes_mask[i]]
-    return primes
+    return [2] + [2 * i + 1 for i in range(1, size + 1) if sieve[i]]
 
 def main():
     try:
-        num_str = input("Nhập vào một số nguyên dương: ")
-        limit = int(num_str)
+        limit = int(input("Nhập giới hạn n: "))
         
-        print(f"Đang tính toán các số nguyên tố nhỏ hơn {limit}...")
-        
-        # Bắt đầu đo thời gian
+        print(f"--- Đang tính toán số nguyên tố < {limit} ---")
         start_time = time.perf_counter()
         
-        result = sieve_of_eratosthenes(limit)
+        primes = sieve_optimized(limit)
         
-        # Kết thúc đo thời gian
         end_time = time.perf_counter()
-        execution_time = end_time - start_time
+        duration = end_time - start_time
         
-        # In kết quả (giới hạn in nếu danh sách quá dài để tránh treo terminal)
-        if limit <= 1000:
-            print(f"Các số nguyên tố: {result}")
+        # Chiến lược in tối ưu
+        count = len(primes)
+        if count > 100000:
+            print(f"CẢNH BÁO: Tìm thấy {count} số. Việc in trực tiếp sẽ làm chậm máy.")
+            confirm = input("Bạn có thực sự muốn in tất cả không? (y/n): ")
+            if confirm.lower() != 'y':
+                print(f"5 số đầu: {primes[:5]} ... 5 số cuối: {primes[-5:]}")
+            else:
+                # In tối ưu bằng cách join chuỗi để giảm số lần gọi hệ thống
+                print(", ".join(map(str, primes)))
         else:
-            print(f"Tìm thấy {len(result)} số nguyên tố.")
-            print(f"5 số đầu tiên: {result[:5]}")
-            print(f"5 số cuối cùng: {result[-5:]}")
-            
-        print(f"\nThời gian thực thi: {execution_time:.6f} giây")
+            print(", ".join(map(str, primes)))
+
+        print(f"\n{'='*40}")
+        print(f"Tổng cộng: {count} số nguyên tố.")
+        print(f"Thời gian tính toán: {duration:.6f} giây")
         
     except ValueError:
-        print("Vui lòng nhập một số nguyên hợp lệ.")
+        print("Lỗi: Vui lòng nhập một số nguyên.")
+    except MemoryError:
+        print("Lỗi: Số quá lớn vượt quá bộ nhớ RAM cho phép.")
     
-    # Dừng màn hình
-    print("\n" + "="*30)
-    input("Nhấn Enter để thoát chương trình...")
+    input("\nNhấn Enter để kết thúc...")
 
 if __name__ == "__main__":
     main()
