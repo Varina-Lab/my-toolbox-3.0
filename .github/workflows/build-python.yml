@@ -1,0 +1,66 @@
+name: Build Python (Native EXE)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tên thư mục (Ví dụ: _template)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ./python-tools
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install nuitka zstandard
+          if (Test-Path "${{ inputs.tool_name }}/requirements.txt") {
+            python -m pip install -r ${{ inputs.tool_name }}/requirements.txt
+          }
+
+      - name: Build with Nuitka
+        shell: pwsh
+        run: |
+          $toolName = "${{ inputs.tool_name }}"
+          cd $toolName
+          
+          # Lệnh biên dịch Nuitka:
+          # --standalone: Chạy không cần cài Python
+          # --onefile: Đóng gói tất cả vào 1 file EXE duy nhất
+          # --lto=yes: Tối ưu hóa hiệu năng tối đa
+          # --output-dir=build: Thư mục chứa file build
+          # --assume-yes-for-downloads: Tự động tải các công cụ cần thiết (như MinGW/C compiler)
+          python -m nuitka `
+            --standalone `
+            --onefile `
+            --lto=yes `
+            --assume-yes-for-downloads `
+            --output-filename="$toolName.exe" `
+            --output-dir="out" `
+            "src/main.py"
+
+      - name: Prepare Artifact
+        shell: pwsh
+        run: |
+          $toolName = "${{ inputs.tool_name }}"
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          
+          $exePath = "$toolName/out/$toolName.exe"
+          
+          if (Test-Path $exePath) {
+             Copy-Item $exePath
