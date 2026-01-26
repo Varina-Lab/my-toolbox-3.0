@@ -1,20 +1,28 @@
-#define _CRT_SECURE_NO_WARNINGS
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <shlobj.h>
+#include <shellapi.h>
+#include <conio.h>
+#include <fcntl.h>
+#include <io.h>
+
 #include <iostream>
-#include <string>
-#include <vector>
 #include <filesystem>
 #include <fstream>
-#include <unordered_set>
+#include <vector>
+#include <string>
+#include <set>
 #include <algorithm>
-#include <sstream>
-#include <map>
+#include <thread>
+#include <chrono>
 
-// Sử dụng namespace fs để code gọn hơn
+// Đảm bảo bạn đã có file này (xem hướng dẫn trên)
+#include <nlohmann/json.hpp>
+
 namespace fs = std::filesystem;
+using json = nlohmann::json;
+using namespace std::chrono_literals;
 
-// --- CẤU HÌNH & HẰNG SỐ ---
+// --- CONSTANTS ---
 const std::vector<std::wstring> NOISE_KEYWORDS = {
     L"microsoft", L"windows", L"nvidia", L"amd", L"intel", L"realtek", 
     L"cache", L"temp", L"logs", L"crash", L"telemetry", L"onedrive", L"unity", L"squirrel"
@@ -22,54 +30,58 @@ const std::vector<std::wstring> NOISE_KEYWORDS = {
 
 const DWORD CREATE_NO_WINDOW_FLAG = 0x08000000;
 
-// --- CÁC STRUCT DỮ LIỆU ---
+// --- CONFIG STRUCTURES ---
 struct StubbornFolder {
-    std::wstring tag;
-    std::wstring name;
+    std::string tag;
+    std::string name;
 };
 
 struct AppConfig {
-    std::wstring selected_exe;
-    std::vector<std::wstring> registry_keys;
+    std::string selected_exe;
+    std::vector<std::string> registry_keys;
     std::vector<StubbornFolder> stubborn_folders;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE(StubbornFolder, tag, name)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE(AppConfig, selected_exe, registry_keys, stubborn_folders)
 };
 
-// --- HELPER CLASS: WINDOWS API WRAPPER (TỐI ƯU HÓA) ---
-class WinApi {
+// --- WIN API & UTILS ---
+class WinUtils {
 public:
     static void HideConsole() {
         HWND hwnd = GetConsoleWindow();
-        if (hwnd) ShowWindow(hwnd, SW_HIDE);
+        if (hwnd) {
+            // SW_HIDE = 0: Ẩn hoàn toàn khỏi Taskbar
+            ShowWindow(hwnd, SW_HIDE);
+        }
     }
 
-    // Logic Focus + Animation (Fix #3)
-    static void ForceFocus() {
-        AllocConsole();
+    static void FocusConsole() {
+        if (!GetConsoleWindow()) AllocConsole();
         HWND hwnd = GetConsoleWindow();
         if (!hwnd) return;
 
-        // Redirect IO cho console mới tạo
-        FILE* fp;
-        freopen_s(&fp, "CONOUT$", "w", stdout);
-        freopen_s(&fp, "CONIN$", "r", stdin);
-        
-        // UTF-8 Output support
-        SetConsoleOutputCP(CP_UTF8);
-
+        // --- KỸ THUẬT FORCE FOCUS + ANIMATION (Fix #3) ---
         HWND hForeground = GetForegroundWindow();
-        DWORD foreThread = GetWindowThreadProcessId(hForeground, NULL);
-        DWORD appThread = GetCurrentThreadId();
+        DWORD curThreadId = GetCurrentThreadId();
+        DWORD foreThreadId = GetWindowThreadProcessId(hForeground, nullptr);
+        bool attached = false;
 
-        if (foreThread != appThread) {
-            AttachThreadInput(foreThread, appThread, TRUE);
-            // Kỹ thuật Minimize -> Restore để kích hoạt Animation Zoom-in
-            ShowWindow(hwnd, SW_SHOWMINIMIZED);
-            ShowWindow(hwnd, SW_RESTORE);
-            SetForegroundWindow(hwnd);
-            AttachThreadInput(foreThread, appThread, FALSE);
-        } else {
-            ShowWindow(hwnd, SW_RESTORE);
-            SetForegroundWindow(hwnd);
+        if (foreThreadId != curThreadId) {
+            attached = AttachThreadInput(foreThreadId, curThreadId, TRUE);
+        }
+
+        // Bước 1: Minimize trước để đưa về trạng thái "dưới taskbar"
+        ShowWindow(hwnd, SW_SHOWMINIMIZED);
+        
+        // Bước 2: Restore để kích hoạt hiệu ứng Zoom-in của Windows
+        ShowWindow(hwnd, SW_RESTORE);
+
+        // Bước 3: Set Focus
+        SetForegroundWindow(hwnd);
+
+        if (attached) {
+            AttachThreadInput(foreThreadId, curThreadId, FALSE);
         }
     }
 
@@ -77,236 +89,155 @@ public:
         AllowSetForegroundWindow(ASFW_ANY);
     }
 
-    // Chạy lệnh hệ thống ẩn (tối ưu hơn system())
-    static bool RunCommand(const std::wstring& cmd, const std::wstring& args) {
+    static std::wstring GetCurrentExeName() {
+        wchar_t buffer[MAX_PATH];
+        GetModuleFileNameW(NULL, buffer, MAX_PATH);
+        return fs::path(buffer).filename().wstring();
+    }
+
+    // Chạy lệnh CMD ẩn
+    static void RunCmdSilent(const std::wstring& cmdArgs) {
         STARTUPINFOW si = { sizeof(si) };
         PROCESS_INFORMATION pi = { 0 };
         si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE; // Quan trọng: Ẩn window con
+        si.wShowWindow = SW_HIDE;
 
-        std::wstring fullCmd = L"\"" + cmd + L"\" " + args;
-        std::vector<wchar_t> buf(fullCmd.begin(), fullCmd.end());
-        buf.push_back(0);
-
-        if (CreateProcessW(NULL, buf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW_FLAG, NULL, NULL, &si, &pi)) {
+        // Cần copy string vì CreateProcess có thể thay đổi buffer
+        std::wstring cmd = L"cmd.exe /C " + cmdArgs;
+        
+        if (CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW_FLAG, nullptr, nullptr, &si, &pi)) {
             WaitForSingleObject(pi.hProcess, INFINITE);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
-            return true;
         }
-        return false;
+    }
+
+    static std::wstring ToWString(const std::string& s) {
+        if (s.empty()) return L"";
+        int size_needed = MultiByteToWideChar(CP_UTF8, 0, &s[0], (int)s.size(), NULL, 0);
+        std::wstring wstrTo(size_needed, 0);
+        MultiByteToWideChar(CP_UTF8, 0, &s[0], (int)s.size(), &wstrTo[0], size_needed);
+        return wstrTo;
     }
 };
 
-// --- HELPER: JSON SIÊU NHẸ (CUSTOM) ---
-// Tự viết để không phụ thuộc library, tối ưu tốc độ biên dịch và kích thước file
-class SimpleJson {
-public:
-    static void Save(const fs::path& path, const AppConfig& cfg) {
-        std::wofstream file(path);
-        file << L"{\n";
-        file << L"  \"selected_exe\": \"" << Escape(cfg.selected_exe) << L"\",\n";
-        
-        file << L"  \"registry_keys\": [\n";
-        for (size_t i = 0; i < cfg.registry_keys.size(); ++i) {
-            file << L"    \"" << Escape(cfg.registry_keys[i]) << L"\"" << (i < cfg.registry_keys.size() - 1 ? L"," : L"") << L"\n";
-        }
-        file << L"  ],\n";
-
-        file << L"  \"stubborn_folders\": [\n";
-        for (size_t i = 0; i < cfg.stubborn_folders.size(); ++i) {
-            file << L"    { \"tag\": \"" << Escape(cfg.stubborn_folders[i].tag) << L"\", \"name\": \"" << Escape(cfg.stubborn_folders[i].name) << L"\" }" 
-                 << (i < cfg.stubborn_folders.size() - 1 ? L"," : L"") << L"\n";
-        }
-        file << L"  ]\n";
-        file << L"}";
-    }
-
-    static bool Load(const fs::path& path, AppConfig& outCfg) {
-        std::wifstream file(path);
-        if (!file.is_open()) return false;
-        
-        std::wstringstream buffer;
-        buffer << file.rdbuf();
-        std::wstring content = buffer.str();
-
-        // Parse thủ công đơn giản (giả định file đúng định dạng do chính app tạo ra)
-        outCfg.selected_exe = ExtractValue(content, L"\"selected_exe\":");
-        
-        // Parse Registry Keys
-        size_t regStart = content.find(L"\"registry_keys\":");
-        size_t regEnd = content.find(L"]", regStart);
-        if (regStart != std::wstring::npos) {
-            std::wstring regBlock = content.substr(regStart, regEnd - regStart);
-            size_t pos = 0;
-            while ((pos = regBlock.find(L"\"", pos + 1)) != std::wstring::npos) {
-                size_t end = regBlock.find(L"\"", pos + 1);
-                if (end == std::wstring::npos) break;
-                // Kiểm tra xem đây có phải key value không (không chứa :)
-                std::wstring val = regBlock.substr(pos + 1, end - pos - 1);
-                if (val.find(L"registry_keys") == std::wstring::npos) {
-                    if (!val.empty()) outCfg.registry_keys.push_back(Unescape(val));
-                }
-                pos = end + 1;
-            }
-        }
-
-        // Parse Stubborn Folders
-        size_t foldStart = content.find(L"\"stubborn_folders\":");
-        if (foldStart != std::wstring::npos) {
-            size_t pos = foldStart;
-            while ((pos = content.find(L"{", pos)) != std::wstring::npos) {
-                size_t endBlock = content.find(L"}", pos);
-                std::wstring block = content.substr(pos, endBlock - pos);
-                StubbornFolder sf;
-                sf.tag = ExtractValue(block, L"\"tag\":");
-                sf.name = ExtractValue(block, L"\"name\":");
-                if (!sf.tag.empty()) outCfg.stubborn_folders.push_back(sf);
-                pos = endBlock + 1;
-            }
-        }
-        return true;
-    }
-
-private:
-    static std::wstring Escape(std::wstring s) {
-        std::wstring res;
-        for (wchar_t c : s) {
-            if (c == L'\\') res += L"\\\\";
-            else res += c;
-        }
-        return res;
-    }
-    static std::wstring Unescape(std::wstring s) {
-        std::wstring res;
-        for (size_t i = 0; i < s.length(); ++i) {
-            if (s[i] == L'\\' && i + 1 < s.length() && s[i+1] == L'\\') {
-                res += L'\\'; i++;
-            } else res += s[i];
-        }
-        return res;
-    }
-    static std::wstring ExtractValue(const std::wstring& src, const std::wstring& key) {
-        size_t keyPos = src.find(key);
-        if (keyPos == std::wstring::npos) return L"";
-        size_t start = src.find(L"\"", keyPos + key.length());
-        size_t end = src.find(L"\"", start + 1);
-        return Unescape(src.substr(start + 1, end - start - 1));
-    }
-};
-
-// --- ENGINE CORE ---
+// --- ENGINE CLASS ---
 class Engine {
 public:
     fs::path root;
     fs::path p_data;
     fs::path cfg_file;
     fs::path reg_backup;
-    std::vector<std::pair<std::wstring, fs::path>> sys_roots;
+    std::vector<std::pair<std::string, fs::path>> sys_roots;
 
     Engine() {
-        // Lấy đường dẫn unicode chuẩn xác
-        wchar_t buf[MAX_PATH];
-        GetCurrentDirectoryW(MAX_PATH, buf);
-        root = buf;
-        p_data = root / L"Portable_Data";
-        cfg_file = p_data / L"config" / L"config.json";
-        reg_backup = p_data / L"Registry" / L"data.reg";
+        // Tối ưu hóa: Dùng wpath để handle Unicode chính xác
+        root = fs::current_path();
+        p_data = root / "Portable_Data";
+        cfg_file = p_data / "config" / "config.json";
+        reg_backup = p_data / "Registry" / "data.reg";
 
         sys_roots = {
-            {L"ROAM", GetEnv(L"APPDATA")},
-            {L"LOCAL", GetEnv(L"LOCALAPPDATA")},
-            {L"DOCS", GetDocsPath()},
-            // Low xử lý riêng nếu cần, ở đây giả lập cơ bản
-            {L"LOW", GetEnv(L"USERPROFILE") / L"AppData" / L"LocalLow"}
+            {"ROAM", GetEnvPath(L"APPDATA")},
+            {"LOCAL", GetEnvPath(L"LOCALAPPDATA")},
+            // Giả định UserProfile/AppData/LocalLow
+            {"LOW",  GetEnvPath(L"USERPROFILE") / "AppData" / "LocalLow"}, 
+            {"DOCS", GetDocsPath()}
         };
     }
 
     void Bootstrap() {
-        fs::create_directories(p_data / L"config");
-        fs::create_directories(p_data / L"Registry");
+        fs::create_directories(p_data / "config");
+        fs::create_directories(p_data / "Registry");
+    }
+
+    fs::path MapPortPath(const std::string& tag, const std::string& name) {
+        fs::path base = p_data;
+        if (tag == "ROAM") return base / "AppData" / "Roaming" / name;
+        if (tag == "LOCAL") return base / "AppData" / "Local" / name;
+        if (tag == "LOW")  return base / "AppData" / "LocalLow" / name;
+        return base / "Documents" / name;
     }
 
     void SetupEnv() {
-        auto roam = p_data / L"AppData" / L"Roaming";
-        auto local = p_data / L"AppData" / L"Local";
-        auto docs = p_data / L"Documents";
+        fs::path roam = p_data / "AppData" / "Roaming";
+        fs::path local = p_data / "AppData" / "Local";
+        fs::path docs = p_data / "Documents";
 
         if (!fs::exists(roam)) fs::create_directories(roam);
         if (!fs::exists(local)) fs::create_directories(local);
         if (!fs::exists(docs)) fs::create_directories(docs);
 
-        SetEnvironmentVariableW(L"APPDATA", roam.c_str());
-        SetEnvironmentVariableW(L"LOCALAPPDATA", local.c_str());
-        SetEnvironmentVariableW(L"USERPROFILE", p_data.c_str());
-        SetEnvironmentVariableW(L"DOCUMENTS", docs.c_str());
+        SetEnv(L"APPDATA", roam);
+        SetEnv(L"LOCALAPPDATA", local);
+        SetEnv(L"USERPROFILE", p_data);
+        SetEnv(L"DOCUMENTS", docs);
     }
 
-    std::unordered_set<std::wstring> SnapshotRegistry() {
-        std::unordered_set<std::wstring> keys;
-        HKEY hKey;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            wchar_t name[256];
-            DWORD index = 0;
-            DWORD len = 256;
-            while (RegEnumKeyExW(hKey, index++, name, &len, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
-                keys.insert(std::wstring(L"HKEY_CURRENT_USER\\Software\\") + name);
-                len = 256;
-            }
-            RegCloseKey(hKey);
-        }
-        return keys;
-    }
-
-    std::unordered_set<std::wstring> SnapshotFolders() {
-        std::unordered_set<std::wstring> items;
-        for (const auto& [tag, path] : sys_roots) {
-            if (fs::exists(path)) {
-                for (const auto& entry : fs::directory_iterator(path)) {
+    std::set<std::wstring> SnapshotFolders() {
+        std::set<std::wstring> s;
+        for (const auto& [tag, root_path] : sys_roots) {
+            if (fs::exists(root_path)) {
+                for (const auto& entry : fs::directory_iterator(root_path)) {
                     if (entry.is_directory()) {
-                        items.insert(tag + L"|" + entry.path().filename().wstring());
+                        std::wstring key = WinUtils::ToWString(tag) + L"|" + entry.path().filename().wstring();
+                        s.insert(key);
                     }
                 }
             }
         }
-        return items;
+        return s;
     }
 
-    void SyncRegistry(const std::vector<std::wstring>& keys) {
+    std::set<std::wstring> SnapshotRegistry() {
+        std::set<std::wstring> s;
+        HKEY hKey;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            wchar_t achKey[255]; 
+            DWORD cbName; 
+            DWORD cSubKeys = 0;
+            RegQueryInfoKey(hKey, NULL, NULL, NULL, &cSubKeys, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+
+            for (DWORD i = 0; i < cSubKeys; i++) {
+                cbName = 255;
+                if (RegEnumKeyExW(hKey, i, achKey, &cbName, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
+                    s.insert(std::wstring(L"HKEY_CURRENT_USER\\Software\\") + achKey);
+                }
+            }
+            RegCloseKey(hKey);
+        }
+        return s;
+    }
+
+    void SyncRegistry(const std::vector<std::string>& keys) {
         if (keys.empty()) return;
-        if (fs::exists(reg_backup)) fs::remove(reg_backup);
+        
+        fs::remove(reg_backup); // Xóa cũ
+        fs::path temp_reg = fs::temp_directory_path() / "port_tmp.reg";
 
-        wchar_t tempPath[MAX_PATH];
-        GetTempPathW(MAX_PATH, tempPath);
-        fs::path tempReg = fs::path(tempPath) / L"port_tmp.reg";
+        // Export và Gộp file
+        // Tối ưu: Mở file stream một lần để append
+        std::ofstream final_out(reg_backup, std::ios::binary | std::ios::app);
+        
+        for (const auto& k : keys) {
+            std::wstring wk = WinUtils::ToWString(k);
+            std::wstring cmd = L"reg export \"" + wk + L"\" \"" + temp_reg.wstring() + L"\" /y";
+            WinUtils::RunCmdSilent(cmd);
 
-        for (const auto& key : keys) {
-            // Export
-            WinApi::RunCommand(L"reg", L"export \"" + key + L"\" \"" + tempReg.wstring() + L"\" /y");
-            
-            // Append to backup file
-            if (fs::exists(tempReg)) {
-                std::ifstream in(tempReg, std::ios::binary);
-                std::ofstream out(reg_backup, std::ios::binary | std::ios::app);
-                out << in.rdbuf();
-                in.close(); out.close();
-                fs::remove(tempReg);
+            if (fs::exists(temp_reg)) {
+                std::ifstream tmp_in(temp_reg, std::ios::binary);
+                final_out << tmp_in.rdbuf();
+                tmp_in.close();
+                fs::remove(temp_reg);
             }
             
-            // Delete from host
-            WinApi::RunCommand(L"reg", L"delete \"" + key + L"\" /f");
+            // Xóa khỏi máy thật
+            WinUtils::RunCmdSilent(L"reg delete \"" + wk + L"\" /f");
         }
     }
 
-    fs::path MapPortPath(const std::wstring& tag, const std::wstring& name) {
-        if (tag == L"ROAM") return p_data / L"AppData" / L"Roaming" / name;
-        if (tag == L"LOCAL") return p_data / L"AppData" / L"Local" / name;
-        if (tag == L"LOW") return p_data / L"AppData" / L"LocalLow" / name;
-        return p_data / L"Documents" / name;
-    }
-
 private:
-    fs::path GetEnv(const wchar_t* var) {
+    fs::path GetEnvPath(const wchar_t* var) {
         wchar_t buf[32767];
         GetEnvironmentVariableW(var, buf, 32767);
         return fs::path(buf);
@@ -314,76 +245,131 @@ private:
 
     fs::path GetDocsPath() {
         wchar_t path[MAX_PATH];
-        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_PERSONAL, NULL, 0, path))) {
+        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_MYDOCUMENTS, NULL, 0, path))) {
             return fs::path(path);
         }
-        return GetEnv(L"USERPROFILE") / L"Documents";
+        return GetEnvPath(L"USERPROFILE") / "Documents";
+    }
+
+    void SetEnv(const wchar_t* name, const fs::path& val) {
+        SetEnvironmentVariableW(name, val.c_str());
     }
 };
 
-// --- LOGIC CHÍNH ---
+// --- UI HELPERS (Minimal TUI) ---
+size_t SelectMenu(const std::string& prompt, const std::vector<std::wstring>& items) {
+    size_t selected = 0;
+    while (true) {
+        system("cls");
+        std::cout << prompt << "\n\n";
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (i == selected) std::cout << " > "; else std::cout << "   ";
+            std::wcout << items[i] << L"\n";
+        }
+        
+        int c = _getch();
+        if (c == 224) { // Arrow keys
+            switch (_getch()) {
+                case 72: if (selected > 0) selected--; else selected = items.size()-1; break; // Up
+                case 80: if (selected < items.size()-1) selected++; else selected = 0; break; // Down
+            }
+        } else if (c == 13) { // Enter
+            return selected;
+        }
+    }
+}
 
-void RunSandbox(Engine& engine, AppConfig& config) {
-    // Chỉ tạo folder khi chạy sandbox
+std::vector<size_t> MultiSelectMenu(const std::string& prompt, const std::vector<std::wstring>& items) {
+    std::vector<bool> checked(items.size(), false);
+    size_t cursor = 0;
+    while (true) {
+        system("cls");
+        std::cout << prompt << " (Space: Toggle, Enter: Confirm)\n\n";
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (i == cursor) std::cout << " > ["; else std::cout << "   [";
+            std::cout << (checked[i] ? "X" : " ") << "] ";
+            std::wcout << items[i] << L"\n";
+        }
+
+        int c = _getch();
+        if (c == 224) {
+            switch (_getch()) {
+                case 72: if (cursor > 0) cursor--; else cursor = items.size()-1; break;
+                case 80: if (cursor < items.size()-1) cursor++; else cursor = 0; break;
+            }
+        } else if (c == 32) { // Space
+            checked[cursor] = !checked[cursor];
+        } else if (c == 13) { // Enter
+            std::vector<size_t> result;
+            for (size_t i = 0; i < items.size(); ++i) if (checked[i]) result.push_back(i);
+            return result;
+        }
+    }
+}
+
+// --- MODES ---
+void RunSandbox(Engine& engine, const AppConfig& config) {
+    // SỬA ĐỔI 1.C: Chỉ bootstrap khi chạy sandbox
     engine.Bootstrap();
 
-    if (config.registry_keys.empty() && config.stubborn_folders.empty()) {
-        engine.SetupEnv();
-        WinApi::GrantFocus();
-        WinApi::RunCommand(config.selected_exe, L"");
-        return;
+    if (!config.registry_keys.empty() && fs::exists(engine.reg_backup)) {
+        WinUtils::RunCmdSilent(L"reg import \"" + engine.reg_backup.wstring() + L"\"");
     }
 
-    // Import Registry
-    if (fs::exists(engine.reg_backup)) {
-        WinApi::RunCommand(L"reg", L"import \"" + engine.reg_backup.wstring() + L"\"");
-    }
-
-    // Junctions
     std::vector<fs::path> junctions;
     for (const auto& f : config.stubborn_folders) {
+        // Tìm path gốc
         fs::path origin;
-        for (const auto& [tag, path] : engine.sys_roots) {
-            if (tag == f.tag) { origin = path / f.name; break; }
+        for (auto& [t, p] : engine.sys_roots) {
+            if (t == f.tag) { origin = p / f.name; break; }
         }
         fs::path dest = engine.MapPortPath(f.tag, f.name);
 
         if (!fs::exists(origin)) {
-            // Tạo Junction bằng mklink (đơn giản, hiệu quả)
-            // Lệnh: cmd /c mklink /J "origin" "dest"
-            WinApi::RunCommand(L"cmd", L"/c mklink /J \"" + origin.wstring() + L"\" \"" + dest.wstring() + L"\"");
+            // Tạo Junction bằng mklink (Tương thích tốt nhất mà không cần lib ngoài)
+            // Lệnh: mklink /J "Link" "Target"
+            std::wstring cmd = L"mklink /J \"" + origin.wstring() + L"\" \"" + dest.wstring() + L"\"";
+            WinUtils::RunCmdSilent(cmd);
             junctions.push_back(origin);
         }
     }
 
     engine.SetupEnv();
-    WinApi::GrantFocus();
-    WinApi::HideConsole(); // Đảm bảo ẩn
+    WinUtils::GrantFocus();
+    WinUtils::HideConsole();
 
-    // Chạy EXE chính (Blocking wait)
-    WinApi::RunCommand(config.selected_exe, L"");
+    std::wstring exeW = WinUtils::ToWString(config.selected_exe);
+    
+    // Chạy EXE
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = { 0 };
+    wchar_t cmdLine[32767];
+    wcscpy_s(cmdLine, exeW.c_str());
+
+    if (CreateProcessW(nullptr, cmdLine, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
 
     // Cleanup
-    for (const auto& j : junctions) {
-        RemoveDirectoryW(j.c_str()); // Chỉ xóa junction point
-    }
+    for (const auto& j : junctions) fs::remove(j); // Remove junction point
     engine.SyncRegistry(config.registry_keys);
 }
 
 void LearningMode(Engine& engine) {
-    // 1. Tự động tìm EXE (Fix #2: Loại bỏ chính mình)
-    wchar_t selfPath[MAX_PATH];
-    GetModuleFileNameW(NULL, selfPath, MAX_PATH);
-    std::wstring selfName = fs::path(selfPath).filename().wstring();
+    // SỬA ĐỔI 2: Tự động detect tên file exe hiện tại để loại trừ
+    std::wstring selfName = WinUtils::GetCurrentExeName();
     std::transform(selfName.begin(), selfName.end(), selfName.begin(), ::towlower);
 
     std::vector<std::wstring> exes;
-    for (const auto& entry : fs::directory_iterator(L".")) {
-        if (entry.path().extension() == L".exe") {
+    for (const auto& entry : fs::directory_iterator(".")) {
+        if (entry.path().extension() == ".exe") {
             std::wstring name = entry.path().filename().wstring();
             std::wstring lower = name;
             std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
             
+            // Lọc chính mình
             if (lower != selfName) {
                 exes.push_back(name);
             }
@@ -391,140 +377,155 @@ void LearningMode(Engine& engine) {
     }
 
     if (exes.empty()) {
-        WinApi::ForceFocus();
-        std::wcout << L"[ERROR] No executable found." << std::endl;
-        Sleep(3000);
-        return; // Thoát ngay, không tạo folder rỗng (Fix #1)
+        WinUtils::FocusConsole();
+        std::cout << "[ERROR] No executable found.\n";
+        std::this_thread::sleep_for(3s);
+        return; // SỬA ĐỔI 1.A: Thoát ngay, không tạo folder rác
     }
 
-    // Chỉ bootstrap khi đã chọn được exe
+    // SỬA ĐỔI 1.B: Có file rồi mới tạo folder
     engine.Bootstrap();
 
     std::wstring selected_exe;
     if (exes.size() == 1) {
-        WinApi::HideConsole();
+        WinUtils::HideConsole();
         selected_exe = exes[0];
     } else {
-        WinApi::ForceFocus();
-        std::wcout << L"Select target:" << std::endl;
-        for (size_t i = 0; i < exes.size(); ++i) {
-            std::wcout << L"[" << i << L"] " << exes[i] << std::endl;
-        }
-        int choice;
-        std::wcin >> choice;
-        if (choice < 0 || choice >= exes.size()) return;
-        
-        // Sau khi chọn xong, ẩn ngay lập tức (Fix #3)
-        WinApi::HideConsole();
-        selected_exe = exes[choice];
+        WinUtils::FocusConsole();
+        size_t idx = SelectMenu("Select target:", exes);
+        WinUtils::HideConsole(); // Sửa đổi 3: Ẩn ngay sau khi chọn
+        selected_exe = exes[idx];
     }
 
     // Snapshot
     auto reg_before = engine.SnapshotRegistry();
-    auto fol_before = engine.SnapshotFolders();
+    auto folders_before = engine.SnapshotFolders();
 
     engine.SetupEnv();
-    WinApi::GrantFocus();
-    WinApi::HideConsole();
+    WinUtils::GrantFocus();
+    WinUtils::HideConsole(); // Đảm bảo ẩn
 
-    // Chạy EXE để học
-    WinApi::RunCommand(selected_exe, L"");
-    Sleep(1000);
+    // Chạy EXE
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = { 0 };
+    wchar_t cmdLine[32767];
+    wcscpy_s(cmdLine, selected_exe.c_str());
 
+    if (CreateProcessW(nullptr, cmdLine, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+
+    std::this_thread::sleep_for(1s);
     auto reg_after = engine.SnapshotRegistry();
-    auto fol_after = engine.SnapshotFolders();
+    auto folders_after = engine.SnapshotFolders();
 
-    // Tính toán thay đổi (Diff)
+    // Diff
     std::vector<std::wstring> reg_candidates;
     for (const auto& k : reg_after) {
         if (reg_before.find(k) == reg_before.end()) {
             std::wstring lower = k;
             std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
             bool noise = false;
-            for (const auto& kw : NOISE_KEYWORDS) {
-                if (lower.find(kw) != std::wstring::npos) { noise = true; break; }
-            }
+            for (const auto& n : NOISE_KEYWORDS) if (lower.find(n) != std::wstring::npos) { noise = true; break; }
             if (!noise) reg_candidates.push_back(k);
         }
     }
 
-    std::vector<StubbornFolder> fol_candidates;
-    for (const auto& k : fol_after) {
-        if (fol_before.find(k) == fol_before.end()) {
-            size_t sep = k.find(L"|");
-            std::wstring tag = k.substr(0, sep);
-            std::wstring name = k.substr(sep + 1);
-            
-            std::wstring lower = name;
-            std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
-            bool noise = false;
-            for (const auto& kw : NOISE_KEYWORDS) {
-                if (lower.find(kw) != std::wstring::npos) { noise = true; break; }
+    std::vector<StubbornFolder> folder_candidates;
+    for (const auto& [tag, root_path] : engine.sys_roots) {
+        if (fs::exists(root_path)) {
+            for (const auto& entry : fs::directory_iterator(root_path)) {
+                if (entry.is_directory()) {
+                    std::wstring nameW = entry.path().filename().wstring();
+                    std::wstring key = WinUtils::ToWString(tag) + L"|" + nameW;
+                    
+                    if (folders_before.find(key) == folders_before.end() && 
+                        folders_after.find(key) != folders_after.end()) {
+                        
+                        std::wstring lower = nameW;
+                        std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+                        bool noise = false;
+                        for (const auto& n : NOISE_KEYWORDS) if (lower.find(n) != std::wstring::npos) { noise = true; break; }
+                        
+                        if (!noise) {
+                            folder_candidates.push_back({ tag, entry.path().filename().string() });
+                        }
+                    }
+                }
             }
-            if (!noise) fol_candidates.push_back({tag, name});
         }
     }
 
-    if (reg_candidates.empty() && fol_candidates.empty()) {
-        AppConfig cfg; cfg.selected_exe = selected_exe;
-        SimpleJson::Save(engine.cfg_file, cfg);
+    // Nếu không có gì thay đổi -> Lưu config rỗng & Thoát
+    if (reg_candidates.empty() && folder_candidates.empty()) {
+        AppConfig cfg;
+        cfg.selected_exe = fs::path(selected_exe).string();
+        std::ofstream o(engine.cfg_file);
+        json j = cfg;
+        o << j.dump(4);
         return;
     }
 
-    // Hỏi người dùng (Hiện lại console với Animation)
-    WinApi::ForceFocus();
+    // Hỏi người dùng
+    WinUtils::FocusConsole();
     
-    AppConfig config;
-    config.selected_exe = selected_exe;
-
+    std::vector<std::string> chosen_reg_keys;
     if (!reg_candidates.empty()) {
-        std::wcout << L"\nRegistry Changes Detected (Enter IDs separated by space, or -1 for all, 0 for none):" << std::endl;
-        for (size_t i = 0; i < reg_candidates.size(); ++i) {
-            std::wcout << L"[" << i + 1 << L"] " << reg_candidates[i] << std::endl;
-        }
-        // Giả lập logic chọn đơn giản: Lấy hết nếu không phức tạp hóa UI console
-        std::wcout << L"> Auto-selecting all relevant keys for portable..." << std::endl;
-        config.registry_keys = reg_candidates; 
+        auto idxs = MultiSelectMenu("Select Registry Keys to Keep?", reg_candidates);
+        for (auto i : idxs) chosen_reg_keys.push_back(fs::path(reg_candidates[i]).string()); // Lưu string UTF8
     }
 
-    if (!fol_candidates.empty()) {
-        std::wcout << L"\nFolder Changes Detected:" << std::endl;
-        for (const auto& f : fol_candidates) {
-             std::wcout << L"[MOVING] " << f.tag << L" -> " << f.name << std::endl;
-             
-             fs::path origin;
-             for (const auto& [tag, path] : engine.sys_roots) {
-                 if (tag == f.tag) { origin = path / f.name; break; }
-             }
-             fs::path dest = engine.MapPortPath(f.tag, f.name);
-             fs::create_directories(dest.parent_path());
+    std::vector<StubbornFolder> chosen_folders;
+    if (!folder_candidates.empty()) {
+        std::vector<std::wstring> display_names;
+        for (const auto& f : folder_candidates) {
+            display_names.push_back(L"[" + WinUtils::ToWString(f.tag) + L"] " + WinUtils::ToWString(f.name));
+        }
+        auto idxs = MultiSelectMenu("Select Stubborn Folders to Move?", display_names);
+        
+        for (auto i : idxs) {
+            StubbornFolder f = folder_candidates[i];
+            chosen_folders.push_back(f);
+            
+            // Move Folder bằng Robocopy (Reliable nhất)
+            fs::path origin;
+            for (auto& [t, p] : engine.sys_roots) if (t == f.tag) origin = p / f.name;
+            fs::path dest = engine.MapPortPath(f.tag, f.name);
+            fs::create_directories(dest.parent_path());
 
-             // Robocopy move
-             std::wstring args = L"\"" + origin.wstring() + L"\" \"" + dest.wstring() + L"\" /E /MOVE /NFL /NDL /NJH /NJS /R:3 /W:1";
-             WinApi::RunCommand(L"robocopy", args);
-             
-             config.stubborn_folders.push_back(f);
+            // Lệnh Robocopy /MOVE /E
+            std::wstring cmd = L"robocopy \"" + origin.wstring() + L"\" \"" + dest.wstring() + L"\" /E /MOVE /NFL /NDL /NJH /NJS /R:3 /W:1";
+            WinUtils::RunCmdSilent(cmd);
         }
     }
 
-    SimpleJson::Save(engine.cfg_file, config);
-    engine.SyncRegistry(config.registry_keys);
+    // Save Config
+    AppConfig cfg;
+    cfg.selected_exe = fs::path(selected_exe).string();
+    cfg.registry_keys = chosen_reg_keys;
+    cfg.stubborn_folders = chosen_folders;
+
+    std::ofstream o(engine.cfg_file);
+    json j = cfg;
+    o << j.dump(4);
+
+    engine.SyncRegistry(chosen_reg_keys);
 }
 
-// --- ENTRY POINT ---
-// Sử dụng WinMain thay vì main để mặc định không hiện console
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // Chỉ tạo console khi cần thiết (trong ForceFocus)
-    // Thiết lập locale UTF-8 cho toàn bộ app
-    SetConsoleOutputCP(CP_UTF8);
+int main() {
+    // Hỗ trợ Unicode cho Console output (wcout)
+    _setmode(_fileno(stdout), _O_U16TEXT);
+    WinUtils::RunCmdSilent(L"chcp 65001");
 
     Engine engine;
 
-    // Fix 1: Không gọi bootstrap ở đây
-    
     if (fs::exists(engine.cfg_file)) {
-        AppConfig config;
-        if (SimpleJson::Load(engine.cfg_file, config)) {
+        std::ifstream i(engine.cfg_file);
+        json j;
+        if (i >> j) {
+            AppConfig config = j.get<AppConfig>();
             RunSandbox(engine, config);
             return 0;
         }
