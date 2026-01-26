@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shlobj.h> // <--- Đã thêm thư viện này
 #include <shellapi.h>
 #include <conio.h>
 #include <fcntl.h>
@@ -15,7 +16,6 @@
 #include <thread>
 #include <chrono>
 
-// Đảm bảo bạn đã có file này (xem hướng dẫn trên)
 #include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
@@ -51,7 +51,6 @@ public:
     static void HideConsole() {
         HWND hwnd = GetConsoleWindow();
         if (hwnd) {
-            // SW_HIDE = 0: Ẩn hoàn toàn khỏi Taskbar
             ShowWindow(hwnd, SW_HIDE);
         }
     }
@@ -61,7 +60,6 @@ public:
         HWND hwnd = GetConsoleWindow();
         if (!hwnd) return;
 
-        // --- KỸ THUẬT FORCE FOCUS + ANIMATION (Fix #3) ---
         HWND hForeground = GetForegroundWindow();
         DWORD curThreadId = GetCurrentThreadId();
         DWORD foreThreadId = GetWindowThreadProcessId(hForeground, nullptr);
@@ -71,13 +69,8 @@ public:
             attached = AttachThreadInput(foreThreadId, curThreadId, TRUE);
         }
 
-        // Bước 1: Minimize trước để đưa về trạng thái "dưới taskbar"
         ShowWindow(hwnd, SW_SHOWMINIMIZED);
-        
-        // Bước 2: Restore để kích hoạt hiệu ứng Zoom-in của Windows
         ShowWindow(hwnd, SW_RESTORE);
-
-        // Bước 3: Set Focus
         SetForegroundWindow(hwnd);
 
         if (attached) {
@@ -95,14 +88,12 @@ public:
         return fs::path(buffer).filename().wstring();
     }
 
-    // Chạy lệnh CMD ẩn
     static void RunCmdSilent(const std::wstring& cmdArgs) {
         STARTUPINFOW si = { sizeof(si) };
         PROCESS_INFORMATION pi = { 0 };
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
 
-        // Cần copy string vì CreateProcess có thể thay đổi buffer
         std::wstring cmd = L"cmd.exe /C " + cmdArgs;
         
         if (CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW_FLAG, nullptr, nullptr, &si, &pi)) {
@@ -131,7 +122,6 @@ public:
     std::vector<std::pair<std::string, fs::path>> sys_roots;
 
     Engine() {
-        // Tối ưu hóa: Dùng wpath để handle Unicode chính xác
         root = fs::current_path();
         p_data = root / "Portable_Data";
         cfg_file = p_data / "config" / "config.json";
@@ -140,7 +130,6 @@ public:
         sys_roots = {
             {"ROAM", GetEnvPath(L"APPDATA")},
             {"LOCAL", GetEnvPath(L"LOCALAPPDATA")},
-            // Giả định UserProfile/AppData/LocalLow
             {"LOW",  GetEnvPath(L"USERPROFILE") / "AppData" / "LocalLow"}, 
             {"DOCS", GetDocsPath()}
         };
@@ -212,11 +201,8 @@ public:
     void SyncRegistry(const std::vector<std::string>& keys) {
         if (keys.empty()) return;
         
-        fs::remove(reg_backup); // Xóa cũ
+        fs::remove(reg_backup);
         fs::path temp_reg = fs::temp_directory_path() / "port_tmp.reg";
-
-        // Export và Gộp file
-        // Tối ưu: Mở file stream một lần để append
         std::ofstream final_out(reg_backup, std::ios::binary | std::ios::app);
         
         for (const auto& k : keys) {
@@ -230,8 +216,6 @@ public:
                 tmp_in.close();
                 fs::remove(temp_reg);
             }
-            
-            // Xóa khỏi máy thật
             WinUtils::RunCmdSilent(L"reg delete \"" + wk + L"\" /f");
         }
     }
@@ -243,10 +227,14 @@ private:
         return fs::path(buf);
     }
 
+    // --- FIX: Hàm lấy Document chuẩn mới ---
     fs::path GetDocsPath() {
-        wchar_t path[MAX_PATH];
-        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_MYDOCUMENTS, NULL, 0, path))) {
-            return fs::path(path);
+        PWSTR path = nullptr;
+        // FOLDERID_Documents được định nghĩa trong shlobj.h
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, NULL, &path))) {
+            fs::path p(path);
+            CoTaskMemFree(path);
+            return p;
         }
         return GetEnvPath(L"USERPROFILE") / "Documents";
     }
@@ -256,7 +244,10 @@ private:
     }
 };
 
-// --- UI HELPERS (Minimal TUI) ---
+// ... (Phần UI HELPERS và MODES bên dưới giữ nguyên như cũ) ...
+// Để đảm bảo code chạy được, bạn hãy copy nốt phần UI HELPERS và main bên dưới vào nhé
+// (Phần đó không có lỗi, chỉ cần sửa phần trên)
+
 size_t SelectMenu(const std::string& prompt, const std::vector<std::wstring>& items) {
     size_t selected = 0;
     while (true) {
@@ -268,12 +259,12 @@ size_t SelectMenu(const std::string& prompt, const std::vector<std::wstring>& it
         }
         
         int c = _getch();
-        if (c == 224) { // Arrow keys
+        if (c == 224) { 
             switch (_getch()) {
-                case 72: if (selected > 0) selected--; else selected = items.size()-1; break; // Up
-                case 80: if (selected < items.size()-1) selected++; else selected = 0; break; // Down
+                case 72: if (selected > 0) selected--; else selected = items.size()-1; break; 
+                case 80: if (selected < items.size()-1) selected++; else selected = 0; break; 
             }
-        } else if (c == 13) { // Enter
+        } else if (c == 13) { 
             return selected;
         }
     }
@@ -297,9 +288,9 @@ std::vector<size_t> MultiSelectMenu(const std::string& prompt, const std::vector
                 case 72: if (cursor > 0) cursor--; else cursor = items.size()-1; break;
                 case 80: if (cursor < items.size()-1) cursor++; else cursor = 0; break;
             }
-        } else if (c == 32) { // Space
+        } else if (c == 32) { 
             checked[cursor] = !checked[cursor];
-        } else if (c == 13) { // Enter
+        } else if (c == 13) { 
             std::vector<size_t> result;
             for (size_t i = 0; i < items.size(); ++i) if (checked[i]) result.push_back(i);
             return result;
@@ -307,9 +298,7 @@ std::vector<size_t> MultiSelectMenu(const std::string& prompt, const std::vector
     }
 }
 
-// --- MODES ---
 void RunSandbox(Engine& engine, const AppConfig& config) {
-    // SỬA ĐỔI 1.C: Chỉ bootstrap khi chạy sandbox
     engine.Bootstrap();
 
     if (!config.registry_keys.empty() && fs::exists(engine.reg_backup)) {
@@ -318,7 +307,6 @@ void RunSandbox(Engine& engine, const AppConfig& config) {
 
     std::vector<fs::path> junctions;
     for (const auto& f : config.stubborn_folders) {
-        // Tìm path gốc
         fs::path origin;
         for (auto& [t, p] : engine.sys_roots) {
             if (t == f.tag) { origin = p / f.name; break; }
@@ -326,8 +314,6 @@ void RunSandbox(Engine& engine, const AppConfig& config) {
         fs::path dest = engine.MapPortPath(f.tag, f.name);
 
         if (!fs::exists(origin)) {
-            // Tạo Junction bằng mklink (Tương thích tốt nhất mà không cần lib ngoài)
-            // Lệnh: mklink /J "Link" "Target"
             std::wstring cmd = L"mklink /J \"" + origin.wstring() + L"\" \"" + dest.wstring() + L"\"";
             WinUtils::RunCmdSilent(cmd);
             junctions.push_back(origin);
@@ -340,7 +326,6 @@ void RunSandbox(Engine& engine, const AppConfig& config) {
 
     std::wstring exeW = WinUtils::ToWString(config.selected_exe);
     
-    // Chạy EXE
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = { 0 };
     wchar_t cmdLine[32767];
@@ -352,13 +337,11 @@ void RunSandbox(Engine& engine, const AppConfig& config) {
         CloseHandle(pi.hThread);
     }
 
-    // Cleanup
-    for (const auto& j : junctions) fs::remove(j); // Remove junction point
+    for (const auto& j : junctions) fs::remove(j); 
     engine.SyncRegistry(config.registry_keys);
 }
 
 void LearningMode(Engine& engine) {
-    // SỬA ĐỔI 2: Tự động detect tên file exe hiện tại để loại trừ
     std::wstring selfName = WinUtils::GetCurrentExeName();
     std::transform(selfName.begin(), selfName.end(), selfName.begin(), ::towlower);
 
@@ -368,8 +351,6 @@ void LearningMode(Engine& engine) {
             std::wstring name = entry.path().filename().wstring();
             std::wstring lower = name;
             std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
-            
-            // Lọc chính mình
             if (lower != selfName) {
                 exes.push_back(name);
             }
@@ -380,10 +361,9 @@ void LearningMode(Engine& engine) {
         WinUtils::FocusConsole();
         std::cout << "[ERROR] No executable found.\n";
         std::this_thread::sleep_for(3s);
-        return; // SỬA ĐỔI 1.A: Thoát ngay, không tạo folder rác
+        return; 
     }
 
-    // SỬA ĐỔI 1.B: Có file rồi mới tạo folder
     engine.Bootstrap();
 
     std::wstring selected_exe;
@@ -393,19 +373,17 @@ void LearningMode(Engine& engine) {
     } else {
         WinUtils::FocusConsole();
         size_t idx = SelectMenu("Select target:", exes);
-        WinUtils::HideConsole(); // Sửa đổi 3: Ẩn ngay sau khi chọn
+        WinUtils::HideConsole(); 
         selected_exe = exes[idx];
     }
 
-    // Snapshot
     auto reg_before = engine.SnapshotRegistry();
     auto folders_before = engine.SnapshotFolders();
 
     engine.SetupEnv();
     WinUtils::GrantFocus();
-    WinUtils::HideConsole(); // Đảm bảo ẩn
+    WinUtils::HideConsole(); 
 
-    // Chạy EXE
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = { 0 };
     wchar_t cmdLine[32767];
@@ -421,7 +399,6 @@ void LearningMode(Engine& engine) {
     auto reg_after = engine.SnapshotRegistry();
     auto folders_after = engine.SnapshotFolders();
 
-    // Diff
     std::vector<std::wstring> reg_candidates;
     for (const auto& k : reg_after) {
         if (reg_before.find(k) == reg_before.end()) {
@@ -458,7 +435,6 @@ void LearningMode(Engine& engine) {
         }
     }
 
-    // Nếu không có gì thay đổi -> Lưu config rỗng & Thoát
     if (reg_candidates.empty() && folder_candidates.empty()) {
         AppConfig cfg;
         cfg.selected_exe = fs::path(selected_exe).string();
@@ -468,13 +444,12 @@ void LearningMode(Engine& engine) {
         return;
     }
 
-    // Hỏi người dùng
     WinUtils::FocusConsole();
     
     std::vector<std::string> chosen_reg_keys;
     if (!reg_candidates.empty()) {
         auto idxs = MultiSelectMenu("Select Registry Keys to Keep?", reg_candidates);
-        for (auto i : idxs) chosen_reg_keys.push_back(fs::path(reg_candidates[i]).string()); // Lưu string UTF8
+        for (auto i : idxs) chosen_reg_keys.push_back(fs::path(reg_candidates[i]).string()); 
     }
 
     std::vector<StubbornFolder> chosen_folders;
@@ -489,19 +464,16 @@ void LearningMode(Engine& engine) {
             StubbornFolder f = folder_candidates[i];
             chosen_folders.push_back(f);
             
-            // Move Folder bằng Robocopy (Reliable nhất)
             fs::path origin;
             for (auto& [t, p] : engine.sys_roots) if (t == f.tag) origin = p / f.name;
             fs::path dest = engine.MapPortPath(f.tag, f.name);
             fs::create_directories(dest.parent_path());
 
-            // Lệnh Robocopy /MOVE /E
             std::wstring cmd = L"robocopy \"" + origin.wstring() + L"\" \"" + dest.wstring() + L"\" /E /MOVE /NFL /NDL /NJH /NJS /R:3 /W:1";
             WinUtils::RunCmdSilent(cmd);
         }
     }
 
-    // Save Config
     AppConfig cfg;
     cfg.selected_exe = fs::path(selected_exe).string();
     cfg.registry_keys = chosen_reg_keys;
@@ -515,7 +487,6 @@ void LearningMode(Engine& engine) {
 }
 
 int main() {
-    // Hỗ trợ Unicode cho Console output (wcout)
     _setmode(_fileno(stdout), _O_U16TEXT);
     WinUtils::RunCmdSilent(L"chcp 65001");
 
