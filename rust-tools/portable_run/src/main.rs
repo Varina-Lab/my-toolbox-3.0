@@ -53,28 +53,35 @@ mod win_api {
             let hwnd = GetConsoleWindow();
             
             if !hwnd.is_null() {
-                // Lấy thông tin luồng đang chiếm màn hình (Explorer/Desktop/Game vừa tắt)
+                // --- KỸ THUẬT FORCE FOCUS + ANIMATION ---
+                
+                // 1. Lấy thông tin luồng đang chiếm giữ màn hình (Game/Explorer)
                 let foreground_hwnd = GetForegroundWindow();
                 let current_thread_id = GetCurrentThreadId();
                 let foreground_thread_id = GetWindowThreadProcessId(foreground_hwnd, std::ptr::null_mut());
+                
+                let mut attached = false;
 
-                // Nếu không phải chính mình đang focus, cần "mượn" quyền input
-                let need_attach = foreground_thread_id != current_thread_id;
-
-                if need_attach {
-                    AttachThreadInput(foreground_thread_id, current_thread_id, true);
+                // 2. Nếu không phải chính mình, thực hiện kết nối luồng (Attach Input)
+                if foreground_thread_id != current_thread_id {
+                    attached = AttachThreadInput(foreground_thread_id, current_thread_id, true);
                 }
 
-                // SỬA ĐỔI QUAN TRỌNG:
-                // 1. Dùng 1 (SW_SHOWNORMAL) thay vì 9 (SW_RESTORE).
-                //    Nó giúp cửa sổ hiện lên tự nhiên như khi mới mở app.
-                ShowWindow(hwnd, 1); 
-
-                // 2. Chỉ dùng SetForegroundWindow, BỎ BringWindowToTop.
-                //    Để Windows tự xử lý animation (zoom/fade) thay vì ép hiện lên thô bạo.
-                SetForegroundWindow(hwnd);
+                // 3. TẠO HIỆU ỨNG ANIMATION
+                // Thay vì Restore ngay, ta Minimize nó trước để đưa nó vào trạng thái "dưới Taskbar".
+                // 2 = SW_SHOWMINIMIZED
+                ShowWindow(hwnd, 2); 
                 
-                if need_attach {
+                // Sau đó Restore ngay lập tức. Hành động từ Minimized -> Restore sẽ kích hoạt 
+                // hiệu ứng "Zoom in" mặc định của Windows.
+                // 9 = SW_RESTORE
+                ShowWindow(hwnd, 9); 
+
+                // 4. Đặt focus (lúc này đã có quyền nhờ bước 2)
+                SetForegroundWindow(hwnd);
+
+                // 5. Ngắt kết nối luồng sau khi xong việc
+                if attached {
                     AttachThreadInput(foreground_thread_id, current_thread_id, false);
                 }
             }
@@ -82,12 +89,13 @@ mod win_api {
     }
 
     pub fn grant_focus() {
-        // Hàm này giữ nguyên, dùng để cho phép game con chiếm quyền focus
-        #[link(name = "user32")]
-        extern "system" {
-            fn AllowSetForegroundWindow(dwProcessId: u32) -> bool;
+        unsafe { 
+            #[link(name = "user32")]
+            extern "system" {
+                fn AllowSetForegroundWindow(dwProcessId: u32) -> bool;
+            }
+            AllowSetForegroundWindow(0xFFFFFFFF); 
         }
-        unsafe { AllowSetForegroundWindow(0xFFFFFFFF); }
     }
 }
 
