@@ -1,0 +1,10 @@
+[project]
+name = "mau"
+version = "0.1.0"
+description = "High performance Mojo tool"
+authors = ["My Toolbox User"]
+channels = ["https://conda.modular.com/max", "conda-forge"] # Channel chính thức mới của Modular
+platforms = ["win-64"]
+
+[dependencies]
+mojo = "*"  # Tự động lấy bản Mojo mới nhất
