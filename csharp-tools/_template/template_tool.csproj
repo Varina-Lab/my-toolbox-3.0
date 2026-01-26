@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Sử dụng .NET 9 mới nhất -->
+    <TargetFramework>net9.0</TargetFramework>
+    <!-- Bật chế độ biên dịch Native AOT (Ra mã máy, không cần Runtime) -->
+    <PublishAot>true</PublishAot>
+    <!-- Tên file mặc định (sẽ bị override khi build) -->
+    <AssemblyName>tool_app</AssemblyName>
+    
+    <!-- Tối ưu hóa: -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Loại bỏ thông tin văn hóa không cần thiết để file nhẹ hơn -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Cắt giảm code thừa -->
+    <TrimMode>full</TrimMode>
+    <!-- Xóa biểu tượng debug -->
+    <StripSymbols>true</StripSymbols>
+  </PropertyGroup>
+
+</Project>
