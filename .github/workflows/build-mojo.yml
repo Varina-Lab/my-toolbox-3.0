@@ -19,12 +19,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Cài đặt Pixi và môi trường Mojo (Tự động cache, cực nhanh)
       - name: Setup Pixi
         uses: prefix-dev/setup-pixi@v0.8.1
         with:
           manifest-path: mojo-tools/${{ inputs.tool_name }}/pixi.toml
-          # Pixi sẽ tự tạo môi trường ảo và cài Mojo vào đó
 
       - name: Build Executable
         shell: pwsh
@@ -32,9 +30,7 @@ jobs:
           $toolName = "${{ inputs.tool_name }}"
           cd $toolName
 
-          # Dùng 'pixi run' để gọi lệnh mojo bên trong môi trường ảo
-          # build src/main.mojo : File nguồn
-          # -o : Tên file exe đầu ra
+          # Dùng 'pixi run' để gọi mojo (nằm trong gói max)
           pixi run mojo build src/main.mojo -o "$toolName.exe"
 
       - name: Prepare Artifact
@@ -44,7 +40,6 @@ jobs:
           
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
           
-          # File exe nằm ngay trong root folder của tool
           $exePath = "$toolName/$toolName.exe"
           
           if (Test-Path $exePath) {
