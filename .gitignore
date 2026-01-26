@@ -1,0 +1,47 @@
+# --- Rust ---
+/target/
+/rust-tools/**/target/
+**/*.rs.bk
+Cargo.lock
+
+# --- C++ ---
+x64/
+x86/
+Debug/
+Release/
+.vs/
+*.obj
+*.pdb
+*.user
+*.exe
+
+# --- C# ---
+bin/
+obj/
+.vscode/
+
+# --- Go ---
+/go-tools/**/bin/
+*.exe
+*.exe~
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+
+# --- Zig ---
+zig-out/
+zig-cache/
+
+# --- Mojo ---
+.mojo/
+__pycache__/
+
+# --- OS & IDE General ---
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
