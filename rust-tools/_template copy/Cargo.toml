@@ -1,0 +1,7 @@
+[package]
+name = "template_tool"
+version = "0.1.0"
+edition = "2024"    # Cập nhật lên kỷ nguyên mới nhất
+
+[dependencies]
+# Thêm các thư viện cần thiết tại đây.
