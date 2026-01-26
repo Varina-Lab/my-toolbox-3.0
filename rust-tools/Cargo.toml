@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["*"]
-exclude = ["_template"]
+exclude = ["_template", "target", "dist"]
 
 # --- MAX PERFORMANCE PROFILE ---
 [profile.release]

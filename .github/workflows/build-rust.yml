@@ -41,7 +41,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
 
           # 4. Tìm file exe vừa tạo ra (Bất kể tên trong Cargo.toml là gì) và đổi tên chuẩn
-          $exeFile = Get-ChildItem "target/release/*.exe" | Select-Object -First 1
+          $exeFile = Get-ChildItem "target/release/*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if ($exeFile) {
             Write-Host "Found build artifact: $($exeFile.Name)"
             # Copy và đổi tên thành tên tool bạn nhập (VD: auto-clicker.exe)
