@@ -37,8 +37,7 @@ mod win_api {
     pub fn hide() {
         unsafe {
             let hwnd = GetConsoleWindow();
-            // SỬA ĐỔI 3: Thay số 6 (SW_MINIMIZE) thành 0 (SW_HIDE) để ẩn hoàn toàn khỏi taskbar
-            if !hwnd.is_null() { ShowWindow(hwnd, 0); } 
+            if !hwnd.is_null() { ShowWindow(hwnd, 6); } // SW_MINIMIZE
         }
     }
 
@@ -185,9 +184,8 @@ impl Engine {
 fn main() -> std::io::Result<()> {
     let _ = Command::new("cmd").args(&["/c", "chcp 65001"]).creation_flags(CREATE_NO_WINDOW).output();
     let engine = Engine::new();
-    
-    // SỬA ĐỔI 1 (Phần A): Không gọi engine.bootstrap() ở đây nữa để tránh tạo folder rỗng khi lỗi.
-    
+    engine.bootstrap()?;
+
     if engine.cfg_file.exists() {
         let mut file = File::open(&engine.cfg_file)?;
         let mut content = String::new();
@@ -202,39 +200,26 @@ fn main() -> std::io::Result<()> {
 }
 
 fn learning_mode(engine: Engine) -> std::io::Result<()> {
-    // SỬA ĐỔI 2: Lấy tên file EXE hiện tại của chính chương trình một cách tự động
-    let current_exe_name = env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
-
     let mut exes: Vec<String> = fs::read_dir(".")?
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| {
-            let lower = n.to_lowercase();
-            // Lọc file đuôi .exe VÀ tên không trùng với chính chương trình này
-            lower.ends_with(".exe") && Some(lower) != current_exe_name
-        })
+        .filter(|n| n.to_lowercase().ends_with(".exe") && !n.contains("portable_run"))
         .collect();
 
     if exes.is_empty() {
         win_api::focus();
         println!("[ERROR] No executable found.");
         thread::sleep(Duration::from_secs(3));
-        return Ok(()); // Thoát mà không tạo folder (Do chưa gọi bootstrap)
+        return Ok(());
     }
 
-    // SỬA ĐỔI 1 (Phần B): Chỉ tạo folder khi đã chắc chắn có file exe để xử lý
-    engine.bootstrap()?;
-
+    // YÊU CẦU 3: Nếu chỉ 1 EXE, ẩn console ngay lập tức
     let selected_exe = if exes.len() == 1 {
         win_api::hide();
         exes.remove(0)
     } else {
         win_api::focus();
         let choice = Select::with_theme(&ColorfulTheme::default()).with_prompt("Select target").items(&exes).default(0).interact().unwrap();
-        // Sau khi chọn xong, gọi hide() với tham số mới (0) sẽ ẩn hoàn toàn taskbar
-        win_api::hide(); 
         exes.remove(choice)
     };
 
@@ -243,12 +228,12 @@ fn learning_mode(engine: Engine) -> std::io::Result<()> {
 
     engine.setup_env()?;
     win_api::grant_focus();
-    // Đảm bảo ẩn lần nữa trước khi chạy app
     win_api::hide();
     
     let mut child = Command::new(&selected_exe).spawn()?;
     child.wait()?;
 
+    // Sau khi game tắt, check xem có thay đổi không trước khi focus lại
     thread::sleep(Duration::from_secs(1));
     let reg_after = engine.snapshot_registry();
     let folders_after = engine.snapshot_folders();
@@ -271,12 +256,14 @@ fn learning_mode(engine: Engine) -> std::io::Result<()> {
         }
     }
 
+    // YÊU CẦU 4: Nếu không quét ra gì, tự lưu NONE và thoát luôn
     if reg_candidates.is_empty() && stubborn_candidates.is_empty() {
         let config = AppConfig { selected_exe, registry_keys: vec![], stubborn_folders: vec![] };
         fs::write(&engine.cfg_file, serde_json::to_string_pretty(&config).unwrap())?;
         return Ok(());
     }
 
+    // Nếu có thay đổi mới hiện console để hỏi
     win_api::focus();
     let mut selected_reg = vec![];
     if !reg_candidates.is_empty() {
@@ -307,9 +294,6 @@ fn learning_mode(engine: Engine) -> std::io::Result<()> {
 }
 
 fn run_sandbox(engine: Engine, config: AppConfig) -> std::io::Result<()> {
-    // SỬA ĐỔI 1 (Phần C): Gọi bootstrap ở đây vì đã xác định chạy sandbox (có config)
-    engine.bootstrap()?;
-
     if config.registry_keys.is_empty() && config.stubborn_folders.is_empty() {
         engine.setup_env()?;
         win_api::grant_focus();
@@ -332,7 +316,7 @@ fn run_sandbox(engine: Engine, config: AppConfig) -> std::io::Result<()> {
 
     engine.setup_env()?;
     win_api::grant_focus();
-    win_api::hide(); // Sẽ ẩn hoàn toàn nhờ sửa đổi ở module win_api
+    win_api::hide();
     
     let mut child = Command::new(&config.selected_exe).spawn()?;
     child.wait()?;
