@@ -1,23 +1,27 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    // Cho phép người dùng chọn target và optimize từ dòng lệnh
-    // Mặc định chúng ta sẽ truyền ReleaseFast từ GitHub Actions
+    // Xác định mục tiêu biên dịch (Windows, Linux, macOS, v.v.)
     const target = b.standardTargetOptions(.{});
+
+    // Xác định chế độ tối ưu hóa (Debug, ReleaseSafe, ReleaseFast, ReleaseSmall)
     const optimize = b.standardOptimizeOption(.{});
 
+    // Tạo một tệp thực thi (executable)
     const exe = b.addExecutable(.{
-        .name = "tool_app", // Tên file tạm, GH Actions sẽ đổi tên sau
+        .name = "hello",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // Cấu hình để loại bỏ symbol thừa (strip) nếu là Release
-    if (optimize == .ReleaseFast or optimize == .ReleaseSmall) {
-        exe.root_module.strip = true;
-    }
-
-    // Cài đặt artifact vào thư mục zig-out/bin
+    // Cài đặt tệp thực thi vào thư mục zig-out/bin
     b.installArtifact(exe);
+
+    // Tạo lệnh "run" để chạy ứng dụng ngay sau khi build
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+
+    const run_step = b.step("run", "Chạy ứng dụng Hello World");
+    run_step.dependOn(&run_cmd.step);
 }
