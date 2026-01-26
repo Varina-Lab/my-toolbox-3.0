@@ -1,4 +1,4 @@
-name: Build Python (Native EXE)
+name: Build Python (Native EXE - No Runtime)
 
 on:
   workflow_dispatch:
@@ -28,29 +28,28 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # Nuitka: Trình biên dịch Python sang C++
-          # zstandard: Giúp nén file EXE nhỏ hơn
           python -m pip install nuitka zstandard
           if (Test-Path "${{ inputs.tool_name }}/requirements.txt") {
             python -m pip install -r ${{ inputs.tool_name }}/requirements.txt
           }
 
-      - name: Build with Nuitka
+      - name: Build with Nuitka (Static Linking via MinGW)
         shell: pwsh
         run: |
           $toolName = "${{ inputs.tool_name }}"
           cd $toolName
           
-          # Lệnh biên dịch Nuitka tối ưu:
-          # --standalone: Chạy không cần cài Python
-          # --onefile: Đóng gói tất cả (bao gồm cả thư viện) vào 1 file EXE duy nhất
-          # --lto=yes: Tối ưu hóa liên kết toàn cục (tăng tốc độ chạy)
-          # --assume-yes-for-downloads: Tự động tải C compiler nếu thiếu
-          # --windows-disable-console: (Tùy chọn) Thêm nếu bạn làm tool có giao diện (GUI), hiện tại để mặc định Console
+          # GIẢI PHÁP: 
+          # 1. --mingw64: Ép sử dụng MinGW thay vì MSVC để tránh phụ thuộc VC++ Redist.
+          # 2. --standalone & --onefile: Đóng gói mọi thứ.
+          # 3. --static-libpython=yes: Link tĩnh thư viện lõi Python.
+          
           python -m nuitka `
+            --mingw64 `
             --standalone `
             --onefile `
             --lto=yes `
+            --static-libpython=yes `
             --assume-yes-for-downloads `
             --output-filename="$toolName.exe" `
             --output-dir="out" `
@@ -60,18 +59,15 @@ jobs:
         shell: pwsh
         run: |
           $toolName = "${{ inputs.tool_name }}"
-          
-          # 1. Tạo folder dist ở thư mục python-tools
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
           
-          # 2. Đường dẫn file exe sau khi Nuitka build xong
           $exePath = "$toolName/out/$toolName.exe"
           
           if (Test-Path $exePath) {
-             Write-Host "Found Python EXE: $exePath"
+             Write-Host "Found Static Python EXE: $exePath"
              Copy-Item $exePath -Destination "dist/$toolName.exe"
           } else {
-             Write-Error "Build failed! EXE not found at $exePath"
+             Write-Error "Build failed! EXE not found."
              exit 1
           }
 
