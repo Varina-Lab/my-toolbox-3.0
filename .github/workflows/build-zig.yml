@@ -1,0 +1,67 @@
+name: Build Zig
+
+on:
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tên thư mục (Ví dụ: _template)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ./zig-tools
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig Compiler
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: master # Luôn dùng bản mới nhất (Nightly/Master) để có tính năng mới
+
+      - name: Build ReleaseFast
+        shell: pwsh
+        run: |
+          $toolName = "${{ inputs.tool_name }}"
+          cd $toolName
+
+          # Lệnh build:
+          # -Doptimize=ReleaseFast: Tối ưu tốc độ tối đa (-O3)
+          # -Dtarget=x86_64-windows: Build rõ ràng cho Windows 64bit
+          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows
+
+      - name: Prepare Artifact
+        shell: pwsh
+        run: |
+          $toolName = "${{ inputs.tool_name }}"
+          
+          # 1. Tạo folder dist
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+
+          # 2. Đường dẫn file output mặc định của Zig
+          # Nó nằm trong: zig-tools/{tool_name}/zig-out/bin/tool_app.exe
+          $sourcePath = "$toolName/zig-out/bin/*.exe"
+          
+          $exeFile = Get-ChildItem $sourcePath | Select-Object -First 1
+
+          if ($exeFile) {
+             Write-Host "Found EXE: $($exeFile.Name)"
+             # Copy và đổi tên thành tên tool bạn nhập
+             Copy-Item $exeFile.FullName -Destination "dist/$toolName.exe"
+          } else {
+             Write-Error "Build failed! No EXE found in $sourcePath"
+             exit 1
+          }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.tool_name }}_zig
+          # Đường dẫn tính từ root của repo
+          path: zig-tools/dist/*.exe
+          if-no-files-found: error
