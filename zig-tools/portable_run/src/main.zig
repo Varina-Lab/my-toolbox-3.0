@@ -12,81 +12,153 @@ const AppConfig = struct {
     stubborn_folders: []StubbornFolder,
 };
 
-// WinAPI declarations 
-// SỬA LỖI DỨT ĐIỂM: Xóa bỏ hoàn toàn "callconv(...)" để Zig tự suy luận chuẩn gọi C mặc định.
-// Không còn phụ thuộc vào bất kỳ tên biến Enum nào của phiên bản Zig đang dùng nữa.
+// --- WIN32 API DECLARATIONS (Không phụ thuộc vào std.fs của Zig) ---
 extern "kernel32" fn GetConsoleWindow() ?*anyopaque;
 extern "user32" fn ShowWindow(hWnd: ?*anyopaque, nCmdShow: i32) win.BOOL;
 extern "kernel32" fn AllocConsole() win.BOOL;
 extern "kernel32" fn GetModuleFileNameW(hModule: ?*anyopaque, lpFilename: [*]u16, nSize: u32) u32;
+extern "kernel32" fn SetCurrentDirectoryW(lpPathName: [*:0]const u16) win.BOOL;
 
+extern "kernel32" fn CreateDirectoryW(lpPathName: [*:0]const u16, lpSecurityAttributes: ?*anyopaque) win.BOOL;
+extern "kernel32" fn CreateFileW(lpFileName: [*:0]const u16, dwDesiredAccess: u32, dwShareMode: u32, lpSecurityAttributes: ?*anyopaque, dwCreationDisposition: u32, dwFlagsAndAttributes: u32, hTemplateFile: ?*anyopaque) win.HANDLE;
+extern "kernel32" fn ReadFile(hFile: win.HANDLE, lpBuffer: [*]u8, nNumberOfBytesToRead: u32, lpNumberOfBytesRead: ?*u32, lpOverlapped: ?*anyopaque) win.BOOL;
+extern "kernel32" fn WriteFile(hFile: win.HANDLE, lpBuffer: [*]const u8, nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ?*u32, lpOverlapped: ?*anyopaque) win.BOOL;
+extern "kernel32" fn CloseHandle(hObject: win.HANDLE) win.BOOL;
+extern "kernel32" fn GetFileSize(hFile: win.HANDLE, lpFileSizeHigh: ?*u32) u32;
+extern "kernel32" fn GetFileAttributesW(lpFileName: [*:0]const u16) u32;
+
+const GENERIC_READ = 0x80000000;
+const GENERIC_WRITE = 0x40000000;
+const OPEN_EXISTING = 3;
+const CREATE_ALWAYS = 2;
+const FILE_ATTRIBUTE_NORMAL = 128;
+const FILE_ATTRIBUTE_DIRECTORY = 16;
+const INVALID_HANDLE_VALUE = @as(win.HANDLE, @ptrFromInt(~@as(usize, 0)));
+const MAX_PATH = 260;
+
+const WIN32_FIND_DATAW = extern struct {
+    dwFileAttributes: u32,
+    ftCreationTime: win.FILETIME,
+    ftLastAccessTime: win.FILETIME,
+    ftLastWriteTime: win.FILETIME,
+    nFileSizeHigh: u32,
+    nFileSizeLow: u32,
+    dwReserved0: u32,
+    dwReserved1: u32,
+    cFileName: [MAX_PATH]u16,
+    cAlternateFileName: [14]u16,
+};
+extern "kernel32" fn FindFirstFileW(lpFileName: [*:0]const u16, lpFindFileData: *WIN32_FIND_DATAW) win.HANDLE;
+extern "kernel32" fn FindNextFileW(hFindFile: win.HANDLE, lpFindFileData: *WIN32_FIND_DATAW) win.BOOL;
+extern "kernel32" fn FindClose(hFindFile: win.HANDLE) win.BOOL;
+
+// --- WIN32 HELPER FUNCTIONS ---
 fn hideConsole() void {
-    const hwnd = GetConsoleWindow();
-    if (hwnd != null) {
+    if (GetConsoleWindow()) |hwnd| {
         _ = ShowWindow(hwnd, 0);
     }
 }
 
 fn showConsole() void {
     _ = AllocConsole();
-    const hwnd = GetConsoleWindow();
-    if (hwnd != null) {
+    if (GetConsoleWindow()) |hwnd| {
         _ = ShowWindow(hwnd, 5); // SW_SHOW
     }
 }
 
+fn createDir(alloc: std.mem.Allocator, path: []const u8) void {
+    if (std.unicode.utf8ToUtf16LeAllocZ(alloc, path)) |path_w| {
+        defer alloc.free(path_w);
+        _ = CreateDirectoryW(path_w.ptr, null);
+    } else |_| {}
+}
+
+fn readFileAlloc(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+    const path_w = try std.unicode.utf8ToUtf16LeAllocZ(alloc, path);
+    defer alloc.free(path_w);
+    
+    const handle = CreateFileW(path_w.ptr, GENERIC_READ, 1, null, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null);
+    if (handle == INVALID_HANDLE_VALUE) return error.FileNotFound;
+    defer _ = CloseHandle(handle);
+    
+    const size = GetFileSize(handle, null);
+    if (size == 0xFFFFFFFF) return error.GetFileSizeFailed;
+    
+    const buf = try alloc.alloc(u8, size);
+    var bytesRead: u32 = 0;
+    if (ReadFile(handle, buf.ptr, size, &bytesRead, null) == 0) return error.ReadFailed;
+    return buf[0..bytesRead];
+}
+
+fn writeFile(alloc: std.mem.Allocator, path: []const u8, data: []const u8) !void {
+    const path_w = try std.unicode.utf8ToUtf16LeAllocZ(alloc, path);
+    defer alloc.free(path_w);
+    
+    const handle = CreateFileW(path_w.ptr, GENERIC_WRITE, 0, null, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, null);
+    if (handle == INVALID_HANDLE_VALUE) return error.CreateFileFailed;
+    defer _ = CloseHandle(handle);
+    
+    var bytesWritten: u32 = 0;
+    if (WriteFile(handle, data.ptr, @intCast(data.len), &bytesWritten, null) == 0) return error.WriteFailed;
+}
+
+fn fileExists(alloc: std.mem.Allocator, path: []const u8) bool {
+    const path_w = std.unicode.utf8ToUtf16LeAllocZ(alloc, path) catch return false;
+    defer alloc.free(path_w);
+    const attr = GetFileAttributesW(path_w.ptr);
+    return attr != 0xFFFFFFFF;
+}
+
+// --- MAIN LOGIC ---
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // 1. Gọi thẳng Win32 API để lấy đường dẫn tuyệt đối của file EXE hiện tại một cách an toàn
+    // 1. Get exact path of this executable
     var exe_path_w: [4096]u16 = undefined;
     const len = GetModuleFileNameW(null, &exe_path_w, 4096);
     if (len == 0) return error.GetModuleFileNameFailed;
 
     const exe_path = try std.unicode.utf16LeToUtf8Alloc(alloc, exe_path_w[0..len]);
-    
-    // 2. Lấy thư mục chứa file EXE làm thư mục gốc (Base Directory)
     const base_dir_path = std.fs.path.dirname(exe_path) orelse return error.NoExeDir;
 
-    // 3. Mở quyền truy cập dựa trên thư mục gốc này (Cho phép lặp file bên trong)
-    var base_dir = try std.fs.openDirAbsolute(base_dir_path, .{ .iterate = true });
-    defer base_dir.close();
+    // 2. Set Current Directory to base_dir_path (Đồng bộ tuyệt đối đường dẫn hiện tại)
+    const base_dir_w = try std.unicode.utf8ToUtf16LeAllocZ(alloc, base_dir_path);
+    _ = SetCurrentDirectoryW(base_dir_w.ptr);
 
     const p_data = try std.fs.path.join(alloc, &.{ base_dir_path, "Portable_Data" });
 
-    // Đảm bảo tạo thư mục nền
-    try base_dir.makePath("Portable_Data/config");
-    try base_dir.makePath("Portable_Data/Registry");
+    // 3. Ensure base directories exist (Gọi API Windows tạo file/thư mục nền)
+    createDir(alloc, "Portable_Data");
+    createDir(alloc, "Portable_Data\\config");
+    createDir(alloc, "Portable_Data\\Registry");
 
-    // Thử load cấu hình
+    // 4. Try loading config
     var has_config = false;
-    if (base_dir.openFile("Portable_Data/config/config.json", .{})) |file| {
-        defer file.close();
-        const content = try file.readToEndAlloc(alloc, 1024 * 1024);
-        
+    if (readFileAlloc(alloc, "Portable_Data\\config\\config.json")) |content| {
         const parsed = std.json.parseFromSlice(AppConfig, alloc, content, .{ .ignore_unknown_fields = true }) catch null;
         if (parsed != null) {
             has_config = true;
-            try runSandbox(alloc, base_dir_path, p_data, base_dir, parsed.?.value);
+            try runSandbox(alloc, base_dir_path, p_data, parsed.?.value);
         }
     } else |_| {}
 
     if (!has_config) {
-        try learningMode(alloc, base_dir_path, p_data, base_dir);
+        try learningMode(alloc, base_dir_path, p_data);
     }
 }
 
-fn setupEnvMap(alloc: std.mem.Allocator, p_data: []const u8, base_dir: std.fs.Dir) !std.process.EnvMap {
+fn setupEnvMap(alloc: std.mem.Allocator, p_data: []const u8) !std.process.EnvMap {
     var env_map = try std.process.getEnvMap(alloc);
     const roam = try std.fs.path.join(alloc, &.{ p_data, "AppData", "Roaming" });
     const local = try std.fs.path.join(alloc, &.{ p_data, "AppData", "Local" });
     const docs = try std.fs.path.join(alloc, &.{ p_data, "Documents" });
 
-    try base_dir.makePath("Portable_Data/AppData/Roaming");
-    try base_dir.makePath("Portable_Data/AppData/Local");
-    try base_dir.makePath("Portable_Data/Documents");
+    createDir(alloc, "Portable_Data\\AppData");
+    createDir(alloc, "Portable_Data\\AppData\\Roaming");
+    createDir(alloc, "Portable_Data\\AppData\\Local");
+    createDir(alloc, "Portable_Data\\Documents");
 
     try env_map.put("APPDATA", roam);
     try env_map.put("LOCALAPPDATA", local);
@@ -96,19 +168,30 @@ fn setupEnvMap(alloc: std.mem.Allocator, p_data: []const u8, base_dir: std.fs.Di
     return env_map;
 }
 
-fn learningMode(alloc: std.mem.Allocator, base_dir_path: []const u8, p_data: []const u8, base_dir: std.fs.Dir) !void {
+fn learningMode(alloc: std.mem.Allocator, base_dir_path: []const u8, p_data: []const u8) !void {
     showConsole();
     const stdout = std.io.getStdOut().writer();
     const stdin = std.io.getStdIn().reader();
 
+    // Lặp tìm File EXE hoàn toàn qua API FindFirstFileW của Windows (bất tử với lỗi fs)
     var exe_list = std.ArrayList([]const u8).init(alloc);
-    var it = base_dir.iterate();
-    while (try it.next()) |entry| {
-        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".exe")) {
-            // Loại trừ bản thân launcher ra khỏi danh sách list
-            if (!std.mem.eql(u8, entry.name, "portable_run.exe")) {
-                try exe_list.append(try alloc.dupe(u8, entry.name));
+    var findData: WIN32_FIND_DATAW = undefined;
+    const search_w = try std.unicode.utf8ToUtf16LeAllocZ(alloc, "*.exe");
+    const handle = FindFirstFileW(search_w.ptr, &findData);
+    
+    if (handle != INVALID_HANDLE_VALUE) {
+        defer _ = FindClose(handle);
+        while (true) {
+            if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+                var flen: usize = 0;
+                while (findData.cFileName[flen] != 0) flen += 1;
+                const name = try std.unicode.utf16LeToUtf8Alloc(alloc, findData.cFileName[0..flen]);
+                
+                if (!std.mem.eql(u8, name, "portable_run.exe")) {
+                    try exe_list.append(name);
+                }
             }
+            if (FindNextFileW(handle, &findData) == 0) break;
         }
     }
 
@@ -142,10 +225,9 @@ fn learningMode(alloc: std.mem.Allocator, base_dir_path: []const u8, p_data: []c
 
     try stdout.print("\n[INFO] Starting {s} in learning mode...\n", .{selected_exe});
     
-    var env_map = try setupEnvMap(alloc, p_data, base_dir);
+    var env_map = try setupEnvMap(alloc, p_data);
     defer env_map.deinit();
 
-    // Chạy với đường dẫn exe tuyệt đối đảm bảo khởi chạy thành công bất chấp CMD đang ở đâu
     const exe_abs = try std.fs.path.join(alloc, &.{ base_dir_path, selected_exe });
     var child = std.process.Child.init(&.{ exe_abs }, alloc);
     child.env_map = &env_map;
@@ -160,42 +242,35 @@ fn learningMode(alloc: std.mem.Allocator, base_dir_path: []const u8, p_data: []c
         .stubborn_folders = try stubborn_folders.toOwnedSlice(),
     };
 
-    var out_file = try base_dir.createFile("Portable_Data/config/config.json", .{});
-    defer out_file.close();
+    var json_str = std.ArrayList(u8).init(alloc);
+    try std.json.stringify(cfg, .{ .whitespace = .indent_4 }, json_str.writer());
+    try writeFile(alloc, "Portable_Data\\config\\config.json", json_str.items);
 
-    try std.json.stringify(cfg, .{ .whitespace = .indent_4 }, out_file.writer());
-
-    try stdout.print("[INFO] Config saved to Portable_Data/config/config.json\n", .{});
+    try stdout.print("[INFO] Config saved to Portable_Data\\config\\config.json\n", .{});
     std.time.sleep(2 * std.time.ns_per_s);
 }
 
-fn runSandbox(alloc: std.mem.Allocator, base_dir_path: []const u8, p_data: []const u8, base_dir: std.fs.Dir, config: AppConfig) !void {
+fn runSandbox(alloc: std.mem.Allocator, base_dir_path: []const u8, p_data: []const u8, config: AppConfig) !void {
     // hideConsole();
     
-    // Import registry nếu file backup có tồn tại
     const reg_backup_abs = try std.fs.path.join(alloc, &.{ p_data, "Registry", "data.reg" });
-    if (base_dir.openFile("Portable_Data/Registry/data.reg", .{})) |f| {
-        f.close();
+    if (fileExists(alloc, "Portable_Data\\Registry\\data.reg")) {
         var import_cmd = std.process.Child.init(&.{ "reg", "import", reg_backup_abs }, alloc);
         _ = try import_cmd.spawnAndWait();
-    } else |_| {}
-
-    // Setup Env
-    var env_map = try setupEnvMap(alloc, p_data, base_dir);
-    defer env_map.deinit();
-
-    // Make junctions (mklink /J)
-    for (config.stubborn_folders) |folder| {
-        _ = folder; // Logic mklink có thể triển khai ở đây
     }
 
-    // Run Exe với đường dẫn tuyệt đối
+    var env_map = try setupEnvMap(alloc, p_data);
+    defer env_map.deinit();
+
+    for (config.stubborn_folders) |folder| {
+        _ = folder; 
+    }
+
     const exe_abs = try std.fs.path.join(alloc, &.{ base_dir_path, config.selected_exe });
     var child = std.process.Child.init(&.{ exe_abs }, alloc);
     child.env_map = &env_map;
     _ = try child.spawnAndWait();
 
-    // Export Registry (Đồng bộ sau khi tiến trình thoát)
     for (config.registry_keys) |key| {
         var export_cmd = std.process.Child.init(&.{ "reg", "export", key, reg_backup_abs, "/y" }, alloc);
         _ = try export_cmd.spawnAndWait();
