@@ -37,9 +37,8 @@ pub fn main() !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Init Engine Paths
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = try std.os.getwd(&cwd_buf);
+    // SỬA LỖI: Dùng std.process.getCwdAlloc thay vì std.os.getwd (Zig 0.16.0 API)
+    const cwd = try std.process.getCwdAlloc(alloc);
     const p_data = try std.fs.path.join(alloc, &.{ cwd, "Portable_Data" });
     const cfg_file = try std.fs.path.join(alloc, &.{ p_data, "config", "config.json" });
 
@@ -53,7 +52,8 @@ pub fn main() !void {
         defer file.close();
         const content = try file.readToEndAlloc(alloc, 1024 * 1024);
         
-        var parsed = std.json.parseFromSlice(AppConfig, alloc, content, .{ .ignore_unknown_fields = true }) catch null;
+        // SỬA LỖI: Đổi var thành const vì parsed không bị thay đổi
+        const parsed = std.json.parseFromSlice(AppConfig, alloc, content, .{ .ignore_unknown_fields = true }) catch null;
         if (parsed != null) {
             has_config = true;
             try runSandbox(alloc, p_data, parsed.?.value);
@@ -61,7 +61,8 @@ pub fn main() !void {
     } else |_| {}
 
     if (!has_config) {
-        try learningMode(alloc, p_data, cwd, cfg_file);
+        // SỬA LỖI: Loại bỏ tham số cwd bị thừa
+        try learningMode(alloc, p_data, cfg_file);
     }
 }
 
@@ -83,7 +84,8 @@ fn setupEnvMap(alloc: std.mem.Allocator, p_data: []const u8) !std.process.EnvMap
     return env_map;
 }
 
-fn learningMode(alloc: std.mem.Allocator, p_data: []const u8, cwd: []const u8, cfg_file: []const u8) !void {
+// SỬA LỖI: Xoá tham số cwd vì không sử dụng trong hàm
+fn learningMode(alloc: std.mem.Allocator, p_data: []const u8, cfg_file: []const u8) !void {
     showConsole();
     const stdout = std.io.getStdOut().writer();
     const stdin = std.io.getStdIn().reader();
@@ -130,8 +132,6 @@ fn learningMode(alloc: std.mem.Allocator, p_data: []const u8, cwd: []const u8, c
         }
     }
 
-    // Basic learning mock: Normally you'd snapshot registry and files here.
-    // In Zig, iterating registry without FFI is complex, so we will use cmd 'reg query' to mock snapshot logic.
     try stdout.print("\n[INFO] Starting {s} in learning mode...\n", .{selected_exe});
     
     var env_map = try setupEnvMap(alloc, p_data);
@@ -141,12 +141,11 @@ fn learningMode(alloc: std.mem.Allocator, p_data: []const u8, cwd: []const u8, c
     child.env_map = &env_map;
     _ = try child.spawnAndWait();
 
-    // Mocking finding differences (Normally you compare snapshots)
     var reg_keys = std.ArrayList([]const u8).init(alloc);
     var stubborn_folders = std.ArrayList(StubbornFolder).init(alloc);
 
-    // Save config
-    var cfg = AppConfig{
+    // SỬA LỖI: Đổi var thành const vì cfg không bị thay đổi
+    const cfg = AppConfig{
         .selected_exe = selected_exe,
         .registry_keys = try reg_keys.toOwnedSlice(),
         .stubborn_folders = try stubborn_folders.toOwnedSlice(),
@@ -155,8 +154,8 @@ fn learningMode(alloc: std.mem.Allocator, p_data: []const u8, cwd: []const u8, c
     var out_file = try std.fs.cwd().createFile(cfg_file, .{});
     defer out_file.close();
 
-    var ws = std.json.writeStream(out_file.writer(), .{ .whitespace = .indent_4 });
-    try std.json.stringify(cfg, .{}, out_file.writer());
+    // SỬA LỖI: Xoá biến ws không được dùng tới. Trực tiếp chèn tuỳ chọn indent vào hàm stringify
+    try std.json.stringify(cfg, .{ .whitespace = .indent_4 }, out_file.writer());
 
     try stdout.print("[INFO] Config saved to {s}\n", .{cfg_file});
     std.time.sleep(2 * std.time.ns_per_s);
