@@ -1,5 +1,5 @@
 [package]
-name = "portable_run"
+name = "portablerun"
 version = "3.1.0"
 edition = "2021"
 
