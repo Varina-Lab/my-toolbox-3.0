@@ -1,7 +1,6 @@
 const std = @import("std");
 const w32 = std.os.windows;
 
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 const NOISE_KEYWORDS = [_][]const u8{
     "microsoft", "windows", "nvidia", "amd", "intel", "realtek", "cache",
     "temp", "logs", "crash", "telemetry", "onedrive", "unity", "squirrel",
@@ -193,7 +192,6 @@ const Engine = struct {
 
         for (keys) |key| {
             var exp_cmd = std.process.Child.init(&[_][]const u8{ "reg", "export", key, temp_reg, "/y" }, self.allocator);
-            exp_cmd.spawn_flags = .{ .creation_flags = CREATE_NO_WINDOW };
             _ = exp_cmd.spawnAndWait() catch {};
 
             if (std.fs.openFileAbsolute(temp_reg, .{})) |tmp_file| {
@@ -211,7 +209,6 @@ const Engine = struct {
             } else |_| {}
 
             var del_cmd = std.process.Child.init(&[_][]const u8{ "reg", "delete", key, "/f" }, self.allocator);
-            del_cmd.spawn_flags = .{ .creation_flags = CREATE_NO_WINDOW };
             _ = del_cmd.spawnAndWait() catch {};
         }
     }
@@ -281,7 +278,6 @@ pub fn main() !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // ĐÃ SỬA: Đưa việc gọi .init ra biến riêng để sử dụng Mutable Pointer
     var chcp_cmd = std.process.Child.init(&[_][]const u8{"cmd", "/c", "chcp 65001"}, alloc);
     _ = chcp_cmd.spawnAndWait() catch {};
 
@@ -410,7 +406,6 @@ fn learning_mode(engine: *const Engine, alloc: std.mem.Allocator) !void {
             if (std.fs.path.dirname(dest)) |parent| try std.fs.cwd().makePath(parent);
             
             var robo = std.process.Child.init(&[_][]const u8{ "robocopy", origin, dest, "/E", "/MOVE", "/NFL", "/NDL", "/NJH", "/NJS", "/R:3", "/W:1" }, alloc);
-            robo.spawn_flags = .{ .creation_flags = CREATE_NO_WINDOW };
             _ = robo.spawnAndWait() catch {};
             
             try selected_folders.append(f);
@@ -436,7 +431,6 @@ fn run_sandbox(engine: *const Engine, config: AppConfig) !void {
 
     if (std.fs.cwd().access(engine.reg_backup, .{})) |_| {
         var imp = std.process.Child.init(&[_][]const u8{ "reg", "import", engine.reg_backup }, alloc);
-        imp.spawn_flags = .{ .creation_flags = CREATE_NO_WINDOW };
         _ = imp.spawnAndWait() catch {};
     } else |_| {}
 
@@ -453,7 +447,6 @@ fn run_sandbox(engine: *const Engine, config: AppConfig) !void {
         
         if (std.fs.cwd().access(origin, .{})) |_| {} else |_| {
             var mklink = std.process.Child.init(&[_][]const u8{ "cmd", "/c", "mklink", "/J", origin, dest }, alloc);
-            mklink.spawn_flags = .{ .creation_flags = CREATE_NO_WINDOW };
             _ = mklink.spawnAndWait() catch {};
             try junctions.append(origin);
         }
