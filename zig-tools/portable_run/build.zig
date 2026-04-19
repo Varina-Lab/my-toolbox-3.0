@@ -4,15 +4,21 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "portable_run",
+    // 1. Khởi tạo root module bao gồm file nguồn, target và optimize
+    const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // Cấp quyền subsystem windows nếu bạn không muốn hiện console lúc chạy nền
-    // exe.subsystem = .Windows; 
+    // 2. Tạo executable và truyền root_module vào
+    const exe = b.addExecutable(.{
+        .name = "portable_run",
+        .root_module = root_module,
+    });
+
+    // Nếu muốn ẩn cửa sổ console (chạy ngầm), bỏ comment dòng dưới:
+    // exe.subsystem = .Windows;
 
     b.installArtifact(exe);
 
