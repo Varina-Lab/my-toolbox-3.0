@@ -1,12 +1,12 @@
 #![windows_subsystem = "windows"]
 
 use dialoguer::{theme::ColorfulTheme, MultiSelect, Select};
-use miniserde::{json, Deserialize, Serialize}; // Sử dụng miniserde
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     env, ffi::c_void,
     fs::{self, File},
-    io::{Read, Write},
+    io::{BufReader, Read, Write},
     path::{Path, PathBuf},
     process::Command,
     thread, time::Duration,
@@ -108,15 +108,11 @@ impl Engine {
     fn new() -> Self {
         let root = env::current_dir().unwrap();
         let p_data = root.join("Portable_Data");
-        
-        // Tự build path thông qua USERPROFILE thay vì dùng crate dirs
-        let user_profile = env::var_os("USERPROFILE").map(PathBuf::from).expect("Không tìm thấy biến môi trường USERPROFILE");
-        
         let sys_roots = vec![
             ("ROAM", env::var_os("APPDATA").map(PathBuf::from).unwrap()),
             ("LOCAL", env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap()),
-            ("LOW", user_profile.join("AppData").join("LocalLow")),
-            ("DOCS", user_profile.join("Documents")),
+            ("LOW", dirs::home_dir().unwrap().join("AppData").join("LocalLow")),
+            ("DOCS", dirs::document_dir().unwrap_or(dirs::home_dir().unwrap().join("Documents"))),
         ];
         Self {
             root,
@@ -211,8 +207,7 @@ fn main() -> std::io::Result<()> {
         let mut file = File::open(&engine.cfg_file)?;
         let mut content = String::new();
         file.read_to_string(&mut content)?;
-        // Sử dụng miniserde để parse JSON
-        if let Ok(config) = json::from_str::<AppConfig>(&content) {
+        if let Ok(config) = serde_json::from_str::<AppConfig>(&content) {
             run_sandbox(engine, config)?;
             return Ok(());
         }
@@ -287,7 +282,7 @@ fn learning_mode(engine: Engine) -> std::io::Result<()> {
 
     if reg_candidates.is_empty() && stubborn_candidates.is_empty() {
         let config = AppConfig { selected_exe, registry_keys: vec![], stubborn_folders: vec![] };
-        fs::write(&engine.cfg_file, json::to_string(&config))?;
+        fs::write(&engine.cfg_file, serde_json::to_string_pretty(&config).unwrap())?;
         return Ok(());
     }
 
@@ -315,8 +310,7 @@ fn learning_mode(engine: Engine) -> std::io::Result<()> {
     }
 
     let config = AppConfig { selected_exe, registry_keys: selected_reg.clone(), stubborn_folders: selected_folders };
-    // Sử dụng miniserde để chuyển struct về JSON
-    fs::write(&engine.cfg_file, json::to_string(&config))?;
+    fs::write(&engine.cfg_file, serde_json::to_string_pretty(&config).unwrap())?;
     engine.sync_registry(&selected_reg)?;
     Ok(())
 }
