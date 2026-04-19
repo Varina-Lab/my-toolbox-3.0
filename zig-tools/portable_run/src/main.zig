@@ -37,43 +37,47 @@ pub fn main() !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // SỬA LỖI: Dùng std.fs.cwd().realpathAlloc thay vì std.process.getCwdAlloc
-    const cwd = try std.fs.cwd().realpathAlloc(alloc, ".");
-    
-    const p_data = try std.fs.path.join(alloc, &.{ cwd, "Portable_Data" });
-    const cfg_file = try std.fs.path.join(alloc, &.{ p_data, "config", "config.json" });
+    // Lấy đường dẫn tuyệt đối thư mục chứa file .exe hiện tại (Chuẩn Portable)
+    const exe_path = try std.fs.selfExePathAlloc(alloc);
+    const base_dir_path = std.fs.path.dirname(exe_path) orelse return error.NoExeDir;
 
-    // Ensure Base Dirs
-    try std.fs.cwd().makePath("Portable_Data\\config");
-    try std.fs.cwd().makePath("Portable_Data\\Registry");
+    // Mở quyền truy cập dựa trên thư mục gốc này thay vì std.fs.cwd()
+    var base_dir = try std.fs.openDirAbsolute(base_dir_path, .{});
+    defer base_dir.close();
 
-    // Try to load config
+    const p_data = try std.fs.path.join(alloc, &.{ base_dir_path, "Portable_Data" });
+
+    // Đảm bảo tạo thư mục nền
+    try base_dir.makePath("Portable_Data\\config");
+    try base_dir.makePath("Portable_Data\\Registry");
+
+    // Thử load cấu hình
     var has_config = false;
-    if (std.fs.cwd().openFile(cfg_file, .{})) |file| {
+    if (base_dir.openFile("Portable_Data\\config\\config.json", .{})) |file| {
         defer file.close();
         const content = try file.readToEndAlloc(alloc, 1024 * 1024);
         
         const parsed = std.json.parseFromSlice(AppConfig, alloc, content, .{ .ignore_unknown_fields = true }) catch null;
         if (parsed != null) {
             has_config = true;
-            try runSandbox(alloc, p_data, parsed.?.value);
+            try runSandbox(alloc, base_dir_path, p_data, base_dir, parsed.?.value);
         }
     } else |_| {}
 
     if (!has_config) {
-        try learningMode(alloc, p_data, cfg_file);
+        try learningMode(alloc, base_dir_path, p_data, base_dir);
     }
 }
 
-fn setupEnvMap(alloc: std.mem.Allocator, p_data: []const u8) !std.process.EnvMap {
+fn setupEnvMap(alloc: std.mem.Allocator, p_data: []const u8, base_dir: std.fs.Dir) !std.process.EnvMap {
     var env_map = try std.process.getEnvMap(alloc);
     const roam = try std.fs.path.join(alloc, &.{ p_data, "AppData", "Roaming" });
     const local = try std.fs.path.join(alloc, &.{ p_data, "AppData", "Local" });
     const docs = try std.fs.path.join(alloc, &.{ p_data, "Documents" });
 
-    try std.fs.cwd().makePath(roam);
-    try std.fs.cwd().makePath(local);
-    try std.fs.cwd().makePath(docs);
+    try base_dir.makePath("Portable_Data\\AppData\\Roaming");
+    try base_dir.makePath("Portable_Data\\AppData\\Local");
+    try base_dir.makePath("Portable_Data\\Documents");
 
     try env_map.put("APPDATA", roam);
     try env_map.put("LOCALAPPDATA", local);
@@ -83,19 +87,19 @@ fn setupEnvMap(alloc: std.mem.Allocator, p_data: []const u8) !std.process.EnvMap
     return env_map;
 }
 
-fn learningMode(alloc: std.mem.Allocator, p_data: []const u8, cfg_file: []const u8) !void {
+fn learningMode(alloc: std.mem.Allocator, base_dir_path: []const u8, p_data: []const u8, base_dir: std.fs.Dir) !void {
     showConsole();
     const stdout = std.io.getStdOut().writer();
     const stdin = std.io.getStdIn().reader();
 
-    var dir = try std.fs.cwd().openDir(".", .{ .iterate = true });
+    var dir = try base_dir.openDir(".", .{ .iterate = true });
     defer dir.close();
 
     var exe_list = std.ArrayList([]const u8).init(alloc);
     var it = dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".exe")) {
-            // Ignore self
+            // Loại trừ bản thân launcher ra khỏi danh sách list
             if (!std.mem.eql(u8, entry.name, "portable_run.exe")) {
                 try exe_list.append(try alloc.dupe(u8, entry.name));
             }
@@ -132,10 +136,12 @@ fn learningMode(alloc: std.mem.Allocator, p_data: []const u8, cfg_file: []const 
 
     try stdout.print("\n[INFO] Starting {s} in learning mode...\n", .{selected_exe});
     
-    var env_map = try setupEnvMap(alloc, p_data);
+    var env_map = try setupEnvMap(alloc, p_data, base_dir);
     defer env_map.deinit();
 
-    var child = std.process.Child.init(&.{ selected_exe }, alloc);
+    // Chạy với đường dẫn exe tuyệt đối đảm bảo khởi chạy thành công
+    const exe_abs = try std.fs.path.join(alloc, &.{ base_dir_path, selected_exe });
+    var child = std.process.Child.init(&.{ exe_abs }, alloc);
     child.env_map = &env_map;
     _ = try child.spawnAndWait();
 
@@ -148,43 +154,39 @@ fn learningMode(alloc: std.mem.Allocator, p_data: []const u8, cfg_file: []const 
         .stubborn_folders = try stubborn_folders.toOwnedSlice(),
     };
 
-    var out_file = try std.fs.cwd().createFile(cfg_file, .{});
+    var out_file = try base_dir.createFile("Portable_Data\\config\\config.json", .{});
     defer out_file.close();
 
     try std.json.stringify(cfg, .{ .whitespace = .indent_4 }, out_file.writer());
 
-    try stdout.print("[INFO] Config saved to {s}\n", .{cfg_file});
+    try stdout.print("[INFO] Config saved.\n", .{});
     std.time.sleep(2 * std.time.ns_per_s);
 }
 
-fn runSandbox(alloc: std.mem.Allocator, p_data: []const u8, config: AppConfig) !void {
+fn runSandbox(alloc: std.mem.Allocator, base_dir_path: []const u8, p_data: []const u8, base_dir: std.fs.Dir, config: AppConfig) !void {
     // hideConsole();
     
-    // Import registry if exists
-    const reg_backup = try std.fs.path.join(alloc, &.{ p_data, "Registry", "data.reg" });
-    if (std.fs.cwd().access(reg_backup, .{})) |_| {
-        var import_cmd = std.process.Child.init(&.{ "reg", "import", reg_backup }, alloc);
+    // Import registry nếu có cấu hình tồn tại
+    const reg_backup_abs = try std.fs.path.join(alloc, &.{ p_data, "Registry", "data.reg" });
+    if (base_dir.openFile("Portable_Data\\Registry\\data.reg", .{})) |f| {
+        f.close();
+        var import_cmd = std.process.Child.init(&.{ "reg", "import", reg_backup_abs }, alloc);
         _ = try import_cmd.spawnAndWait();
     } else |_| {}
 
     // Setup Env
-    var env_map = try setupEnvMap(alloc, p_data);
+    var env_map = try setupEnvMap(alloc, p_data, base_dir);
     defer env_map.deinit();
 
-    // Make junctions (mklink /J)
-    for (config.stubborn_folders) |folder| {
-        // Here you'd run mklink logic
-        _ = folder; 
-    }
-
-    // Run Exe
-    var child = std.process.Child.init(&.{ config.selected_exe }, alloc);
+    // Run Exe với đường dẫn tuyệt đối để chống lỗi file không tìm thấy
+    const exe_abs = try std.fs.path.join(alloc, &.{ base_dir_path, config.selected_exe });
+    var child = std.process.Child.init(&.{ exe_abs }, alloc);
     child.env_map = &env_map;
     _ = try child.spawnAndWait();
 
-    // Export Registry (Sync)
+    // Export Registry (Đồng bộ sau khi thoát)
     for (config.registry_keys) |key| {
-        var export_cmd = std.process.Child.init(&.{ "reg", "export", key, reg_backup, "/y" }, alloc);
+        var export_cmd = std.process.Child.init(&.{ "reg", "export", key, reg_backup_abs, "/y" }, alloc);
         _ = try export_cmd.spawnAndWait();
         
         var del_cmd = std.process.Child.init(&.{ "reg", "delete", key, "/f" }, alloc);
