@@ -172,7 +172,7 @@ const Engine = struct {
             while (true) {
                 var nameLen: w32.DWORD = 256;
                 const res = RegEnumKeyExA(hKey, index, &nameBuf, &nameLen, null, null, null, null);
-                if (res != 0) break; // ERROR_NO_MORE_ITEMS hoặc lỗi khác
+                if (res != 0) break; // ERROR_NO_MORE_ITEMS
                 
                 const name = nameBuf[0..nameLen];
                 const key = try std.fmt.allocPrint(self.allocator, "HKEY_CURRENT_USER\\Software\\{s}", .{name});
@@ -192,8 +192,8 @@ const Engine = struct {
         const temp_reg = try std.fs.path.join(self.allocator, &[_][]const u8{ tmp_dir, "port_tmp.reg" });
 
         for (keys) |key| {
-            var exp_cmd = try std.process.Child.init(&[_][]const u8{ "reg", "export", key, temp_reg, "/y" }, self.allocator);
-            exp_cmd.spawn_flags = std.process.Child.SpawnFlags{ .creation_flags = CREATE_NO_WINDOW };
+            var exp_cmd = std.process.Child.init(&[_][]const u8{ "reg", "export", key, temp_reg, "/y" }, self.allocator);
+            exp_cmd.spawn_flags = .{ .creation_flags = CREATE_NO_WINDOW };
             _ = exp_cmd.spawnAndWait() catch {};
 
             if (std.fs.openFileAbsolute(temp_reg, .{})) |tmp_file| {
@@ -208,10 +208,10 @@ const Engine = struct {
                 out_file.close();
 
                 std.fs.deleteFileAbsolute(temp_reg) catch {};
-            }
+            } else |_| {}
 
-            var del_cmd = try std.process.Child.init(&[_][]const u8{ "reg", "delete", key, "/f" }, self.allocator);
-            del_cmd.spawn_flags = std.process.Child.SpawnFlags{ .creation_flags = CREATE_NO_WINDOW };
+            var del_cmd = std.process.Child.init(&[_][]const u8{ "reg", "delete", key, "/f" }, self.allocator);
+            del_cmd.spawn_flags = .{ .creation_flags = CREATE_NO_WINDOW };
             _ = del_cmd.spawnAndWait() catch {};
         }
     }
@@ -228,7 +228,6 @@ fn isNoise(name: []const u8) bool {
     return false;
 }
 
-// ĐÃ SỬA: Xóa tham số alloc không dùng đến
 fn promptSelect(items: [][]const u8, prompt: []const u8) !usize {
     const stdout = std.io.getStdOut().writer();
     const stdin = std.io.getStdIn().reader();
@@ -282,7 +281,9 @@ pub fn main() !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    _ = std.process.Child.spawnAndWait(&std.process.Child.init(&[_][]const u8{"cmd", "/c", "chcp 65001"}, alloc)) catch {};
+    // ĐÃ SỬA: Đưa việc gọi .init ra biến riêng để sử dụng Mutable Pointer
+    var chcp_cmd = std.process.Child.init(&[_][]const u8{"cmd", "/c", "chcp 65001"}, alloc);
+    _ = chcp_cmd.spawnAndWait() catch {};
 
     var engine = try Engine.init(alloc);
     
@@ -293,9 +294,7 @@ pub fn main() !void {
         if (std.json.parseFromSlice(AppConfig, alloc, content, .{ .ignore_unknown_fields = true })) |parsed| {
             try run_sandbox(&engine, parsed.value);
             return;
-        } else |_| {
-            // Failed to parse config, fallback to learning mode
-        }
+        } else |_| {}
     } else |_| {}
 
     try learning_mode(&engine, alloc);
@@ -332,7 +331,6 @@ fn learning_mode(engine: *const Engine, alloc: std.mem.Allocator) !void {
         selected_exe = exes.items[0];
     } else {
         win_api.focus();
-        // ĐÃ SỬA: Xóa alloc
         const choice = try promptSelect(exes.items, "Select target");
         win_api.hide();
         selected_exe = exes.items[choice];
@@ -379,7 +377,6 @@ fn learning_mode(engine: *const Engine, alloc: std.mem.Allocator) !void {
     }
 
     if (reg_candidates.items.len == 0 and stubborn_candidates.items.len == 0) {
-        // ĐÃ SỬA: Xóa alloc
         try saveConfig(engine.cfg_file, selected_exe, &[_][]const u8{}, &[_]StubbornFolder{});
         return;
     }
@@ -413,14 +410,13 @@ fn learning_mode(engine: *const Engine, alloc: std.mem.Allocator) !void {
             if (std.fs.path.dirname(dest)) |parent| try std.fs.cwd().makePath(parent);
             
             var robo = std.process.Child.init(&[_][]const u8{ "robocopy", origin, dest, "/E", "/MOVE", "/NFL", "/NDL", "/NJH", "/NJS", "/R:3", "/W:1" }, alloc);
-            robo.spawn_flags = std.process.Child.SpawnFlags{ .creation_flags = CREATE_NO_WINDOW };
+            robo.spawn_flags = .{ .creation_flags = CREATE_NO_WINDOW };
             _ = robo.spawnAndWait() catch {};
             
             try selected_folders.append(f);
         }
     }
 
-    // ĐÃ SỬA: Xóa alloc
     try saveConfig(engine.cfg_file, selected_exe, selected_reg.items, selected_folders.items);
     try engine.syncRegistry(selected_reg.items);
 }
@@ -440,7 +436,7 @@ fn run_sandbox(engine: *const Engine, config: AppConfig) !void {
 
     if (std.fs.cwd().access(engine.reg_backup, .{})) |_| {
         var imp = std.process.Child.init(&[_][]const u8{ "reg", "import", engine.reg_backup }, alloc);
-        imp.spawn_flags = std.process.Child.SpawnFlags{ .creation_flags = CREATE_NO_WINDOW };
+        imp.spawn_flags = .{ .creation_flags = CREATE_NO_WINDOW };
         _ = imp.spawnAndWait() catch {};
     } else |_| {}
 
@@ -456,9 +452,8 @@ fn run_sandbox(engine: *const Engine, config: AppConfig) !void {
         const dest = try engine.mapPortPath(f.tag, f.name);
         
         if (std.fs.cwd().access(origin, .{})) |_| {} else |_| {
-            // Create junction using cmd mklink /J
             var mklink = std.process.Child.init(&[_][]const u8{ "cmd", "/c", "mklink", "/J", origin, dest }, alloc);
-            mklink.spawn_flags = std.process.Child.SpawnFlags{ .creation_flags = CREATE_NO_WINDOW };
+            mklink.spawn_flags = .{ .creation_flags = CREATE_NO_WINDOW };
             _ = mklink.spawnAndWait() catch {};
             try junctions.append(origin);
         }
@@ -479,7 +474,6 @@ fn run_sandbox(engine: *const Engine, config: AppConfig) !void {
     try engine.syncRegistry(config.registry_keys);
 }
 
-// ĐÃ SỬA: Xóa tham số alloc không dùng đến
 fn saveConfig(path: []const u8, exe: []const u8, reg: [][]const u8, folders: []const StubbornFolder) !void {
     const config = AppConfig{
         .selected_exe = exe,
