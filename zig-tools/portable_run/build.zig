@@ -6,16 +6,23 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "portable_run",
-        // CÚ PHÁP MỚI DÀNH CHO ZIG 0.14 / 0.15+
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
     });
 
-    // Ẩn cửa sổ console trên Windows
-    exe.subsystem = .Windows;
+    // Cấp quyền subsystem windows nếu bạn không muốn hiện console lúc chạy nền
+    // exe.subsystem = .Windows; 
 
     b.installArtifact(exe);
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+
+    const run_step = b.step("run", "Run the app");
+    run_step.dependOn(&run_cmd.step);
 }

@@ -4,10 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tool_name:
-        description: 'Tên thư mục (Ví dụ: portable_run)'
+        description: 'Tên thư mục (Ví dụ: _template)'
         required: true
         type: string
-        default: 'portable_run'
 
 jobs:
   build:
@@ -23,7 +22,7 @@ jobs:
       - name: Setup Zig Compiler
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.15.2  # CẬP NHẬT: Sử dụng phiên bản mới nhất bạn đã kiểm chứng
 
       - name: Build ReleaseFast
         shell: pwsh
@@ -31,6 +30,7 @@ jobs:
           $toolName = "${{ inputs.tool_name }}"
           cd $toolName
 
+          # Lệnh build giữ nguyên
           zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows
 
       - name: Prepare Artifact
