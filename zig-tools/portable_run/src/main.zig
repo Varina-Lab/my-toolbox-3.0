@@ -228,7 +228,8 @@ fn isNoise(name: []const u8) bool {
     return false;
 }
 
-fn promptSelect(alloc: std.mem.Allocator, items: [][]const u8, prompt: []const u8) !usize {
+// ĐÃ SỬA: Xóa tham số alloc không dùng đến
+fn promptSelect(items: [][]const u8, prompt: []const u8) !usize {
     const stdout = std.io.getStdOut().writer();
     const stdin = std.io.getStdIn().reader();
     
@@ -331,7 +332,8 @@ fn learning_mode(engine: *const Engine, alloc: std.mem.Allocator) !void {
         selected_exe = exes.items[0];
     } else {
         win_api.focus();
-        const choice = try promptSelect(alloc, exes.items, "Select target");
+        // ĐÃ SỬA: Xóa alloc
+        const choice = try promptSelect(exes.items, "Select target");
         win_api.hide();
         selected_exe = exes.items[choice];
     }
@@ -377,7 +379,8 @@ fn learning_mode(engine: *const Engine, alloc: std.mem.Allocator) !void {
     }
 
     if (reg_candidates.items.len == 0 and stubborn_candidates.items.len == 0) {
-        try saveConfig(alloc, engine.cfg_file, selected_exe, &[_][]const u8{}, &[_]StubbornFolder{});
+        // ĐÃ SỬA: Xóa alloc
+        try saveConfig(engine.cfg_file, selected_exe, &[_][]const u8{}, &[_]StubbornFolder{});
         return;
     }
 
@@ -417,7 +420,8 @@ fn learning_mode(engine: *const Engine, alloc: std.mem.Allocator) !void {
         }
     }
 
-    try saveConfig(alloc, engine.cfg_file, selected_exe, selected_reg.items, selected_folders.items);
+    // ĐÃ SỬA: Xóa alloc
+    try saveConfig(engine.cfg_file, selected_exe, selected_reg.items, selected_folders.items);
     try engine.syncRegistry(selected_reg.items);
 }
 
@@ -475,7 +479,8 @@ fn run_sandbox(engine: *const Engine, config: AppConfig) !void {
     try engine.syncRegistry(config.registry_keys);
 }
 
-fn saveConfig(alloc: std.mem.Allocator, path: []const u8, exe: []const u8, reg: [][]const u8, folders: []const StubbornFolder) !void {
+// ĐÃ SỬA: Xóa tham số alloc không dùng đến
+fn saveConfig(path: []const u8, exe: []const u8, reg: [][]const u8, folders: []const StubbornFolder) !void {
     const config = AppConfig{
         .selected_exe = exe,
         .registry_keys = reg,
