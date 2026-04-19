@@ -1,25 +1,24 @@
 const std = @import("std");
-const windows = std.os.windows;
-const WINAPI = windows.WINAPI;
-const HWND = windows.HWND;
-const DWORD = windows.DWORD;
-const BOOL = windows.BOOL;
 
-// --- Win32 API Bindings ---
-extern "kernel32" fn AllocConsole() callconv(WINAPI) BOOL;
-extern "kernel32" fn GetConsoleWindow() callconv(WINAPI) HWND;
-extern "kernel32" fn GetCurrentThreadId() callconv(WINAPI) DWORD;
-extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: i32) callconv(WINAPI) BOOL;
-extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(WINAPI) BOOL;
-extern "user32" fn GetForegroundWindow() callconv(WINAPI) HWND;
-extern "user32" fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: ?*DWORD) callconv(WINAPI) DWORD;
-extern "user32" fn AttachThreadInput(idAttach: DWORD, idAttachTo: DWORD, fAttach: BOOL) callconv(WINAPI) BOOL;
-extern "user32" fn AllowSetForegroundWindow(dwProcessId: DWORD) callconv(WINAPI) BOOL;
+// --- Win32 API Bindings (Tự định nghĩa để không phụ thuộc vào std.os.windows biến động) ---
+const HWND = ?*anyopaque;
+const DWORD = u32;
+const BOOL = i32;
+
+extern "kernel32" fn AllocConsole() callconv(.C) BOOL;
+extern "kernel32" fn GetConsoleWindow() callconv(.C) HWND;
+extern "kernel32" fn GetCurrentThreadId() callconv(.C) DWORD;
+extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: i32) callconv(.C) BOOL;
+extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(.C) BOOL;
+extern "user32" fn GetForegroundWindow() callconv(.C) HWND;
+extern "user32" fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: ?*DWORD) callconv(.C) DWORD;
+extern "user32" fn AttachThreadInput(idAttach: DWORD, idAttachTo: DWORD, fAttach: BOOL) callconv(.C) BOOL;
+extern "user32" fn AllowSetForegroundWindow(dwProcessId: DWORD) callconv(.C) BOOL;
 
 const win_api = struct {
     fn hide() void {
         const hwnd = GetConsoleWindow();
-        if (hwnd != @as(HWND, @ptrFromInt(0))) {
+        if (hwnd != null) {
             _ = ShowWindow(hwnd, 0); // SW_HIDE
         }
     }
@@ -27,7 +26,7 @@ const win_api = struct {
     fn focus() void {
         _ = AllocConsole();
         const hwnd = GetConsoleWindow();
-        if (hwnd != @as(HWND, @ptrFromInt(0))) {
+        if (hwnd != null) {
             const foreground_hwnd = GetForegroundWindow();
             const current_thread_id = GetCurrentThreadId();
             const foreground_thread_id = GetWindowThreadProcessId(foreground_hwnd, null);
@@ -85,11 +84,9 @@ const Engine = struct {
         const root = try std.fs.cwd().realpathAlloc(allocator, ".");
         const p_data = try std.fs.path.join(allocator, &[_][]const u8{ root, "Portable_Data" });
         
-        // CẬP NHẬT: Sử dụng ArrayListUnmanaged thay thế cho ArrayList để tương thích Zig 0.15
         var sys_roots: std.ArrayListUnmanaged(SysRoot) = .empty;
         
         if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
-            // Unmanaged yêu cầu truyền allocator vào mỗi thao tác thay đổi dữ liệu
             try sys_roots.append(allocator, .{ .tag = "ROAM", .path = appdata });
         } else |_| {}
         
@@ -155,18 +152,20 @@ fn learning_mode(allocator: std.mem.Allocator, engine: Engine) !void {
         .stubborn_folders = &[_]StubbornFolder{},
     };
     
-    const config_str = try std.json.stringifyAlloc(allocator, empty_config, .{ .whitespace = .indent_4 });
+    // CẬP NHẬT: Thay thế stringifyAlloc bằng quy trình chuẩn mới của Zig 0.15
+    var json_str = std.ArrayList(u8).init(allocator);
+    defer json_str.deinit();
+    try std.json.stringify(empty_config, .{ .whitespace = .indent_4 }, json_str.writer());
     
     if (std.fs.cwd().createFile(engine.cfg_file, .{ .truncate = true })) |file| {
         defer file.close();
-        try file.writeAll(config_str);
+        try file.writeAll(json_str.items); // Ghi nội dung json từ ArrayList ra file
     } else |err| {
         std.debug.print("Failed to write config: {}\n", .{err});
     }
 }
 
 fn run_sandbox(allocator: std.mem.Allocator, engine: Engine, config: AppConfig) !void {
-    // CẬP NHẬT: Đánh dấu `allocator` là đã sử dụng để tránh lỗi strict của Zig
     _ = allocator; 
     
     try engine.bootstrap();
