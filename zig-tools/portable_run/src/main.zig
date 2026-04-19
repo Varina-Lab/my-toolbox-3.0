@@ -12,11 +12,11 @@ const AppConfig = struct {
     stubborn_folders: []StubbornFolder,
 };
 
-// WinAPI declarations
-extern "kernel32" fn GetConsoleWindow() callconv(.C) ?*anyopaque;
-extern "user32" fn ShowWindow(hWnd: ?*anyopaque, nCmdShow: i32) callconv(.C) win.BOOL;
-extern "kernel32" fn AllocConsole() callconv(.C) win.BOOL;
-extern "kernel32" fn GetModuleFileNameW(hModule: ?*anyopaque, lpFilename: [*]u16, nSize: u32) callconv(.C) u32;
+// WinAPI declarations (SỬA LỖI: dùng win.WINAPI thay vì .C)
+extern "kernel32" fn GetConsoleWindow() callconv(win.WINAPI) ?*anyopaque;
+extern "user32" fn ShowWindow(hWnd: ?*anyopaque, nCmdShow: i32) callconv(win.WINAPI) win.BOOL;
+extern "kernel32" fn AllocConsole() callconv(win.WINAPI) win.BOOL;
+extern "kernel32" fn GetModuleFileNameW(hModule: ?*anyopaque, lpFilename: [*]u16, nSize: u32) callconv(win.WINAPI) u32;
 
 fn hideConsole() void {
     const hwnd = GetConsoleWindow();
