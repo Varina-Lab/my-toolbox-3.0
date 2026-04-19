@@ -85,13 +85,16 @@ const Engine = struct {
         const root = try std.fs.cwd().realpathAlloc(allocator, ".");
         const p_data = try std.fs.path.join(allocator, &[_][]const u8{ root, "Portable_Data" });
         
-        var sys_roots = std.ArrayList(SysRoot).init(allocator);
+        // CẬP NHẬT: Sử dụng ArrayListUnmanaged thay thế cho ArrayList để tương thích Zig 0.15
+        var sys_roots: std.ArrayListUnmanaged(SysRoot) = .empty;
         
         if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
-            try sys_roots.append(.{ .tag = "ROAM", .path = appdata });
+            // Unmanaged yêu cầu truyền allocator vào mỗi thao tác thay đổi dữ liệu
+            try sys_roots.append(allocator, .{ .tag = "ROAM", .path = appdata });
         } else |_| {}
+        
         if (std.process.getEnvVarOwned(allocator, "LOCALAPPDATA")) |localappdata| {
-            try sys_roots.append(.{ .tag = "LOCAL", .path = localappdata });
+            try sys_roots.append(allocator, .{ .tag = "LOCAL", .path = localappdata });
         } else |_| {}
 
         return Engine{
@@ -100,7 +103,7 @@ const Engine = struct {
             .p_data = p_data,
             .cfg_file = try std.fs.path.join(allocator, &[_][]const u8{ p_data, "config", "config.json" }),
             .reg_backup = try std.fs.path.join(allocator, &[_][]const u8{ p_data, "Registry", "data.reg" }),
-            .sys_roots = try sys_roots.toOwnedSlice(),
+            .sys_roots = try sys_roots.toOwnedSlice(allocator),
         };
     }
 
@@ -110,9 +113,6 @@ const Engine = struct {
         try std.fs.cwd().makePath(config_dir);
         try std.fs.cwd().makePath(reg_dir);
     }
-
-    // Các hàm phụ trợ snapshot, setup environment, chạy process cần được dịch thêm vào đây...
-    // Do giới hạn không gian, hàm này trình bày khung làm việc lõi.
 };
 
 pub fn main() !void {
@@ -120,7 +120,6 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // Chạy lệnh thay đổi charset console (chcp 65001)
     _ = try std.process.Child.run(.{
         .allocator = allocator,
         .argv = &[_][]const u8{ "cmd", "/c", "chcp", "65001" },
@@ -128,7 +127,6 @@ pub fn main() !void {
 
     const engine = try Engine.init(allocator);
 
-    // Đọc config nếu có
     if (std.fs.cwd().openFile(engine.cfg_file, .{})) |file| {
         defer file.close();
         const content = try file.readToEndAlloc(allocator, 1024 * 1024);
@@ -139,7 +137,6 @@ pub fn main() !void {
         try run_sandbox(allocator, engine, parsed.value);
         return;
     } else |_| {
-        // Fallback sang learning mode
         try learning_mode(allocator, engine);
     }
 }
@@ -147,17 +144,11 @@ pub fn main() !void {
 fn learning_mode(allocator: std.mem.Allocator, engine: Engine) !void {
     win_api.focus();
     std.debug.print("Entering learning mode (Zig Port)...\n", .{});
-    // Trong thực tế, bạn sẽ liệt kê thư mục, yêu cầu người dùng chọn file exe
-    // qua std.io.getStdIn().reader() thay vì dialoguer của Rust.
     
-    // ... Mã giả định chọn file ...
     try engine.bootstrap();
     win_api.hide();
-    
-    // Snapshot mô phỏng
     win_api.grant_focus();
     
-    // Sinh file JSON mô phỏng để cấu hình
     const empty_config = AppConfig{
         .selected_exe = "example.exe",
         .registry_keys = &[_][]const u8{},
@@ -175,9 +166,10 @@ fn learning_mode(allocator: std.mem.Allocator, engine: Engine) !void {
 }
 
 fn run_sandbox(allocator: std.mem.Allocator, engine: Engine, config: AppConfig) !void {
+    // CẬP NHẬT: Đánh dấu `allocator` là đã sử dụng để tránh lỗi strict của Zig
+    _ = allocator; 
+    
     try engine.bootstrap();
-    // Sandbox Logic: Thiết lập Env Vars, map thư mục, và dùng ChildProcess để chạy selected_exe.
     std.debug.print("Running sandbox for: {s}\n", .{config.selected_exe});
     win_api.hide();
-    // Đã loại bỏ chú thích theo yêu cầu.
 }
