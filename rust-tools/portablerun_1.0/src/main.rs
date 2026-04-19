@@ -29,6 +29,7 @@ mod win_api {
         pub fn GetConsoleWindow() -> *mut c_void;
         pub fn GetCurrentThreadId() -> u32;
     }
+
     #[link(name = "user32")]
     extern "system" {
         pub fn ShowWindow(hwnd: *mut c_void, nCmdShow: i32) -> bool;
@@ -37,35 +38,56 @@ mod win_api {
         pub fn GetWindowThreadProcessId(hwnd: *mut c_void, lpdwProcessId: *mut u32) -> u32;
         pub fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: bool) -> bool;
     }
+
     pub fn hide() {
         unsafe {
             let hwnd = GetConsoleWindow();
+            // 0 = SW_HIDE: Ẩn hoàn toàn
             if !hwnd.is_null() { ShowWindow(hwnd, 0); } 
         }
     }
+
     pub fn focus() {
         unsafe {
             AllocConsole();
             let hwnd = GetConsoleWindow();
             
             if !hwnd.is_null() {
+                // --- KỸ THUẬT FORCE FOCUS + ANIMATION ---
+                
+                // 1. Lấy thông tin luồng đang chiếm giữ màn hình (Game/Explorer)
                 let foreground_hwnd = GetForegroundWindow();
                 let current_thread_id = GetCurrentThreadId();
                 let foreground_thread_id = GetWindowThreadProcessId(foreground_hwnd, std::ptr::null_mut());
                 
                 let mut attached = false;
+
+                // 2. Nếu không phải chính mình, thực hiện kết nối luồng (Attach Input)
                 if foreground_thread_id != current_thread_id {
                     attached = AttachThreadInput(foreground_thread_id, current_thread_id, true);
                 }
+
+                // 3. TẠO HIỆU ỨNG ANIMATION
+                // Thay vì Restore ngay, ta Minimize nó trước để đưa nó vào trạng thái "dưới Taskbar".
+                // 2 = SW_SHOWMINIMIZED
                 ShowWindow(hwnd, 2); 
+                
+                // Sau đó Restore ngay lập tức. Hành động từ Minimized -> Restore sẽ kích hoạt 
+                // hiệu ứng "Zoom in" mặc định của Windows.
+                // 9 = SW_RESTORE
                 ShowWindow(hwnd, 9); 
+
+                // 4. Đặt focus (lúc này đã có quyền nhờ bước 2)
                 SetForegroundWindow(hwnd);
+
+                // 5. Ngắt kết nối luồng sau khi xong việc
                 if attached {
                     AttachThreadInput(foreground_thread_id, current_thread_id, false);
                 }
             }
         }
     }
+
     pub fn grant_focus() {
         unsafe { 
             #[link(name = "user32")]
@@ -108,6 +130,7 @@ impl Engine {
             ("LOW", dirs::home_dir().unwrap().join("AppData").join("LocalLow")),
             ("DOCS", dirs::document_dir().unwrap_or(dirs::home_dir().unwrap().join("Documents"))),
         ];
+
         Self {
             root,
             p_data: p_data.clone(),
@@ -117,12 +140,14 @@ impl Engine {
         }
     }
 
+    // Lazy initialization: Chỉ tạo những thư mục thiết yếu để lưu config/reg
     fn bootstrap(&self) -> std::io::Result<()> {
         fs::create_dir_all(self.p_data.join("config"))?;
         fs::create_dir_all(self.p_data.join("Registry"))?;
         Ok(())
     }
 
+    // Trả về đường dẫn trong Portable_Data dựa trên TAG
     fn map_port_path(&self, tag: &str, folder_name: &str) -> PathBuf {
         match tag {
             "ROAM" => self.p_data.join("AppData").join("Roaming").join(folder_name),
@@ -132,13 +157,16 @@ impl Engine {
         }
     }
 
+    // Cài đặt môi trường và chỉ tạo thư mục nếu nó thực sự cần thiết (Lazy)
     fn setup_env(&self) -> std::io::Result<()> {
         let roam = self.p_data.join("AppData").join("Roaming");
         let local = self.p_data.join("AppData").join("Local");
         let docs = self.p_data.join("Documents");
+
         if !roam.exists() { fs::create_dir_all(&roam)?; }
         if !local.exists() { fs::create_dir_all(&local)?; }
         if !docs.exists() { fs::create_dir_all(&docs)?; }
+
         env::set_var("APPDATA", roam);
         env::set_var("LOCALAPPDATA", local);
         env::set_var("USERPROFILE", &self.p_data);
@@ -176,10 +204,12 @@ impl Engine {
     fn sync_registry(&self, keys: &[String]) -> std::io::Result<()> {
         if keys.is_empty() { return Ok(()); }
         if self.reg_backup.exists() { fs::remove_file(&self.reg_backup)?; }
+
         let temp_reg = env::temp_dir().join("port_tmp.reg");
         for key in keys {
             Command::new("reg").args(&["export", key, temp_reg.to_str().unwrap(), "/y"])
                 .creation_flags(CREATE_NO_WINDOW).status()?;
+
             if temp_reg.exists() {
                 let mut content = Vec::new();
                 File::open(&temp_reg)?.read_to_end(&mut content)?;
@@ -197,6 +227,8 @@ fn main() -> std::io::Result<()> {
     let _ = Command::new("cmd").args(&["/c", "chcp 65001"]).creation_flags(CREATE_NO_WINDOW).output();
     let engine = Engine::new();
     
+    // SỬA ĐỔI 1 (Phần A): Không gọi engine.bootstrap() ở đây nữa để tránh tạo folder rỗng khi lỗi.
+    
     if engine.cfg_file.exists() {
         let mut file = File::open(&engine.cfg_file)?;
         let mut content = String::new();
@@ -211,48 +243,61 @@ fn main() -> std::io::Result<()> {
 }
 
 fn learning_mode(engine: Engine) -> std::io::Result<()> {
+    // SỬA ĐỔI 2: Lấy tên file EXE hiện tại của chính chương trình một cách tự động
     let current_exe_name = env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+
     let mut exes: Vec<String> = fs::read_dir(".")?
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| {
             let lower = n.to_lowercase();
+            // Lọc file đuôi .exe VÀ tên không trùng với chính chương trình này
             lower.ends_with(".exe") && Some(lower) != current_exe_name
         })
         .collect();
+
     if exes.is_empty() {
         win_api::focus();
         println!("[ERROR] No executable found.");
         thread::sleep(Duration::from_secs(3));
-        return Ok(()); 
+        return Ok(()); // Thoát mà không tạo folder (Do chưa gọi bootstrap)
     }
-    
+
+    // SỬA ĐỔI 1 (Phần B): Chỉ tạo folder khi đã chắc chắn có file exe để xử lý
     engine.bootstrap()?;
+
     let selected_exe = if exes.len() == 1 {
         win_api::hide();
         exes.remove(0)
     } else {
         win_api::focus();
         let choice = Select::with_theme(&ColorfulTheme::default()).with_prompt("Select target").items(&exes).default(0).interact().unwrap();
+        // Sau khi chọn xong, gọi hide() với tham số mới (0) sẽ ẩn hoàn toàn taskbar
         win_api::hide(); 
         exes.remove(choice)
     };
+
     let reg_before = engine.snapshot_registry();
     let folders_before = engine.snapshot_folders();
+
     engine.setup_env()?;
     win_api::grant_focus();
+    // Đảm bảo ẩn lần nữa trước khi chạy app
     win_api::hide();
     
     let mut child = Command::new(&selected_exe).spawn()?;
     child.wait()?;
+
     thread::sleep(Duration::from_secs(1));
     let reg_after = engine.snapshot_registry();
     let folders_after = engine.snapshot_folders();
+
     let reg_candidates: Vec<String> = reg_after.difference(&reg_before)
         .filter(|k| !NOISE_KEYWORDS.iter().any(|&n| k.to_lowercase().contains(n)))
         .cloned().collect();
+
     let mut stubborn_candidates = vec![];
     for (tag, root) in &engine.sys_roots {
         if let Ok(entries) = fs::read_dir(root) {
@@ -266,17 +311,20 @@ fn learning_mode(engine: Engine) -> std::io::Result<()> {
             }
         }
     }
+
     if reg_candidates.is_empty() && stubborn_candidates.is_empty() {
         let config = AppConfig { selected_exe, registry_keys: vec![], stubborn_folders: vec![] };
         fs::write(&engine.cfg_file, serde_json::to_string_pretty(&config).unwrap())?;
         return Ok(());
     }
+
     win_api::focus();
     let mut selected_reg = vec![];
     if !reg_candidates.is_empty() {
         let chosen = MultiSelect::with_theme(&ColorfulTheme::default()).with_prompt("Select Registry?").items(&reg_candidates).interact().unwrap();
         for i in chosen { selected_reg.push(reg_candidates[i].clone()); }
     }
+
     let mut selected_folders = vec![];
     if !stubborn_candidates.is_empty() {
         let names: Vec<String> = stubborn_candidates.iter().map(|f| format!("[{}] {}", f.tag, f.name)).collect();
@@ -292,6 +340,7 @@ fn learning_mode(engine: Engine) -> std::io::Result<()> {
             selected_folders.push(f);
         }
     }
+
     let config = AppConfig { selected_exe, registry_keys: selected_reg.clone(), stubborn_folders: selected_folders };
     fs::write(&engine.cfg_file, serde_json::to_string_pretty(&config).unwrap())?;
     engine.sync_registry(&selected_reg)?;
@@ -299,16 +348,20 @@ fn learning_mode(engine: Engine) -> std::io::Result<()> {
 }
 
 fn run_sandbox(engine: Engine, config: AppConfig) -> std::io::Result<()> {
+    // SỬA ĐỔI 1 (Phần C): Gọi bootstrap ở đây vì đã xác định chạy sandbox (có config)
     engine.bootstrap()?;
+
     if config.registry_keys.is_empty() && config.stubborn_folders.is_empty() {
         engine.setup_env()?;
         win_api::grant_focus();
         Command::new(&config.selected_exe).spawn()?;
         return Ok(());
     }
+
     if engine.reg_backup.exists() {
         Command::new("reg").args(&["import", engine.reg_backup.to_str().unwrap()]).creation_flags(CREATE_NO_WINDOW).status()?;
     }
+
     let mut junctions = vec![];
     for f in &config.stubborn_folders {
         let origin = engine.sys_roots.iter().find(|(t,_)| *t == f.tag).map(|(_,p)| p).unwrap().join(&f.name);
@@ -317,12 +370,14 @@ fn run_sandbox(engine: Engine, config: AppConfig) -> std::io::Result<()> {
             if let Ok(_) = junction::create(&dest, &origin) { junctions.push(origin); }
         }
     }
+
     engine.setup_env()?;
     win_api::grant_focus();
-    win_api::hide();
+    win_api::hide(); // Sẽ ẩn hoàn toàn nhờ sửa đổi ở module win_api
     
     let mut child = Command::new(&config.selected_exe).spawn()?;
     child.wait()?;
+
     for j in junctions { let _ = fs::remove_dir(j); }
     engine.sync_registry(&config.registry_keys)?;
     Ok(())
