@@ -1,6 +1,63 @@
 const std = @import("std");
-const win = std.os.windows;
+const w32 = std.os.windows;
 
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+const NOISE_KEYWORDS = [_][]const u8{
+    "microsoft", "windows", "nvidia", "amd", "intel", "realtek", "cache",
+    "temp", "logs", "crash", "telemetry", "onedrive", "unity", "squirrel",
+};
+
+// --- Windows API Externs ---
+extern "kernel32" fn AllocConsole() callconv(.C) w32.BOOL;
+extern "kernel32" fn GetConsoleWindow() callconv(.C) w32.HWND;
+extern "kernel32" fn GetCurrentThreadId() callconv(.C) w32.DWORD;
+
+extern "user32" fn ShowWindow(hwnd: w32.HWND, nCmdShow: i32) callconv(.C) w32.BOOL;
+extern "user32" fn SetForegroundWindow(hwnd: w32.HWND) callconv(.C) w32.BOOL;
+extern "user32" fn GetForegroundWindow() callconv(.C) w32.HWND;
+extern "user32" fn GetWindowThreadProcessId(hwnd: w32.HWND, lpdwProcessId: ?*w32.DWORD) callconv(.C) w32.DWORD;
+extern "user32" fn AttachThreadInput(idAttach: w32.DWORD, idAttachTo: w32.DWORD, fAttach: w32.BOOL) callconv(.C) w32.BOOL;
+extern "user32" fn AllowSetForegroundWindow(dwProcessId: w32.DWORD) callconv(.C) w32.BOOL;
+
+extern "advapi32" fn RegOpenKeyExA(hKey: w32.HKEY, lpSubKey: [*:0]const u8, ulOptions: w32.DWORD, samDesired: w32.DWORD, phkResult: *w32.HKEY) callconv(.C) w32.LONG;
+extern "advapi32" fn RegEnumKeyExA(hKey: w32.HKEY, dwIndex: w32.DWORD, lpName: [*]u8, lpcchName: *w32.DWORD, lpReserved: ?*w32.DWORD, lpClass: ?[*]u8, lpcchClass: ?*w32.DWORD, lpftLastWriteTime: ?*anyopaque) callconv(.C) w32.LONG;
+extern "advapi32" fn RegCloseKey(hKey: w32.HKEY) callconv(.C) w32.LONG;
+
+const win_api = struct {
+    fn hide() void {
+        const hwnd = GetConsoleWindow();
+        if (hwnd != null) {
+            _ = ShowWindow(hwnd, 0); // SW_HIDE
+        }
+    }
+
+    fn focus() void {
+        _ = AllocConsole();
+        const hwnd = GetConsoleWindow();
+        if (hwnd != null) {
+            const foreground_hwnd = GetForegroundWindow();
+            const current_thread_id = GetCurrentThreadId();
+            const foreground_thread_id = GetWindowThreadProcessId(foreground_hwnd, null);
+
+            var attached: w32.BOOL = 0;
+            if (foreground_thread_id != current_thread_id) {
+                attached = AttachThreadInput(foreground_thread_id, current_thread_id, 1);
+            }
+            _ = ShowWindow(hwnd, 2); // SW_SHOWMINIMIZED
+            _ = ShowWindow(hwnd, 9); // SW_RESTORE
+            _ = SetForegroundWindow(hwnd);
+            if (attached != 0) {
+                _ = AttachThreadInput(foreground_thread_id, current_thread_id, 0);
+            }
+        }
+    }
+
+    fn grant_focus() void {
+        _ = AllowSetForegroundWindow(0xFFFFFFFF);
+    }
+};
+
+// --- Models ---
 const StubbornFolder = struct {
     tag: []const u8,
     name: []const u8,
@@ -12,270 +69,419 @@ const AppConfig = struct {
     stubborn_folders: []StubbornFolder,
 };
 
-// --- WIN32 API DECLARATIONS (Không phụ thuộc vào std.fs của Zig) ---
-extern "kernel32" fn GetConsoleWindow() ?*anyopaque;
-extern "user32" fn ShowWindow(hWnd: ?*anyopaque, nCmdShow: i32) win.BOOL;
-extern "kernel32" fn AllocConsole() win.BOOL;
-extern "kernel32" fn GetModuleFileNameW(hModule: ?*anyopaque, lpFilename: [*]u16, nSize: u32) u32;
-extern "kernel32" fn SetCurrentDirectoryW(lpPathName: [*:0]const u16) win.BOOL;
-
-extern "kernel32" fn CreateDirectoryW(lpPathName: [*:0]const u16, lpSecurityAttributes: ?*anyopaque) win.BOOL;
-extern "kernel32" fn CreateFileW(lpFileName: [*:0]const u16, dwDesiredAccess: u32, dwShareMode: u32, lpSecurityAttributes: ?*anyopaque, dwCreationDisposition: u32, dwFlagsAndAttributes: u32, hTemplateFile: ?*anyopaque) win.HANDLE;
-extern "kernel32" fn ReadFile(hFile: win.HANDLE, lpBuffer: [*]u8, nNumberOfBytesToRead: u32, lpNumberOfBytesRead: ?*u32, lpOverlapped: ?*anyopaque) win.BOOL;
-extern "kernel32" fn WriteFile(hFile: win.HANDLE, lpBuffer: [*]const u8, nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ?*u32, lpOverlapped: ?*anyopaque) win.BOOL;
-extern "kernel32" fn CloseHandle(hObject: win.HANDLE) win.BOOL;
-extern "kernel32" fn GetFileSize(hFile: win.HANDLE, lpFileSizeHigh: ?*u32) u32;
-extern "kernel32" fn GetFileAttributesW(lpFileName: [*:0]const u16) u32;
-
-const GENERIC_READ = 0x80000000;
-const GENERIC_WRITE = 0x40000000;
-const OPEN_EXISTING = 3;
-const CREATE_ALWAYS = 2;
-const FILE_ATTRIBUTE_NORMAL = 128;
-const FILE_ATTRIBUTE_DIRECTORY = 16;
-const INVALID_HANDLE_VALUE = @as(win.HANDLE, @ptrFromInt(~@as(usize, 0)));
-const MAX_PATH = 260;
-
-const WIN32_FIND_DATAW = extern struct {
-    dwFileAttributes: u32,
-    ftCreationTime: win.FILETIME,
-    ftLastAccessTime: win.FILETIME,
-    ftLastWriteTime: win.FILETIME,
-    nFileSizeHigh: u32,
-    nFileSizeLow: u32,
-    dwReserved0: u32,
-    dwReserved1: u32,
-    cFileName: [MAX_PATH]u16,
-    cAlternateFileName: [14]u16,
+const SysRoot = struct {
+    tag: []const u8,
+    path: []const u8,
 };
-extern "kernel32" fn FindFirstFileW(lpFileName: [*:0]const u16, lpFindFileData: *WIN32_FIND_DATAW) win.HANDLE;
-extern "kernel32" fn FindNextFileW(hFindFile: win.HANDLE, lpFindFileData: *WIN32_FIND_DATAW) win.BOOL;
-extern "kernel32" fn FindClose(hFindFile: win.HANDLE) win.BOOL;
 
-// --- WIN32 HELPER FUNCTIONS ---
-fn hideConsole() void {
-    if (GetConsoleWindow()) |hwnd| {
-        _ = ShowWindow(hwnd, 0);
+const Engine = struct {
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    p_data: []const u8,
+    cfg_file: []const u8,
+    reg_backup: []const u8,
+    sys_roots: []SysRoot,
+
+    fn init(alloc: std.mem.Allocator) !Engine {
+        var env_map = try alloc.create(std.process.EnvMap);
+        env_map.* = try std.process.getEnvMap(alloc);
+
+        const root = try std.fs.cwd().realpathAlloc(alloc, ".");
+        const p_data = try std.fs.path.join(alloc, &[_][]const u8{ root, "Portable_Data" });
+
+        var sys_roots = std.ArrayList(SysRoot).init(alloc);
+        if (env_map.get("APPDATA")) |appdata| {
+            try sys_roots.append(.{ .tag = "ROAM", .path = try alloc.dupe(u8, appdata) });
+        }
+        if (env_map.get("LOCALAPPDATA")) |local| {
+            try sys_roots.append(.{ .tag = "LOCAL", .path = try alloc.dupe(u8, local) });
+        }
+        if (env_map.get("USERPROFILE")) |user| {
+            const low = try std.fs.path.join(alloc, &[_][]const u8{ user, "AppData", "LocalLow" });
+            try sys_roots.append(.{ .tag = "LOW", .path = low });
+            const docs = try std.fs.path.join(alloc, &[_][]const u8{ user, "Documents" });
+            try sys_roots.append(.{ .tag = "DOCS", .path = docs });
+        }
+
+        return Engine{
+            .allocator = alloc,
+            .root = root,
+            .p_data = p_data,
+            .cfg_file = try std.fs.path.join(alloc, &[_][]const u8{ p_data, "config", "config.json" }),
+            .reg_backup = try std.fs.path.join(alloc, &[_][]const u8{ p_data, "Registry", "data.reg" }),
+            .sys_roots = try sys_roots.toOwnedSlice(),
+        };
+    }
+
+    fn bootstrap(self: *const Engine) !void {
+        try std.fs.cwd().makePath(try std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "config" }));
+        try std.fs.cwd().makePath(try std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "Registry" }));
+    }
+
+    fn mapPortPath(self: *const Engine, tag: []const u8, folder_name: []const u8) ![]const u8 {
+        if (std.mem.eql(u8, tag, "ROAM")) return std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "AppData", "Roaming", folder_name });
+        if (std.mem.eql(u8, tag, "LOCAL")) return std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "AppData", "Local", folder_name });
+        if (std.mem.eql(u8, tag, "LOW")) return std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "AppData", "LocalLow", folder_name });
+        return std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "Documents", folder_name });
+    }
+
+    fn getEnvMap(self: *const Engine) !std.process.EnvMap {
+        var env = try std.process.getEnvMap(self.allocator);
+        
+        const roam = try std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "AppData", "Roaming" });
+        const local = try std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "AppData", "Local" });
+        const docs = try std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "Documents" });
+
+        try std.fs.cwd().makePath(roam);
+        try std.fs.cwd().makePath(local);
+        try std.fs.cwd().makePath(docs);
+
+        try env.put("APPDATA", roam);
+        try env.put("LOCALAPPDATA", local);
+        try env.put("USERPROFILE", self.p_data);
+        try env.put("DOCUMENTS", docs);
+
+        return env;
+    }
+
+    fn snapshotFolders(self: *const Engine) !std.StringHashMap(void) {
+        var set = std.StringHashMap(void).init(self.allocator);
+        for (self.sys_roots) |root| {
+            var dir = std.fs.openDirAbsolute(root.path, .{ .iterate = true }) catch continue;
+            defer dir.close();
+            var it = dir.iterate();
+            while (try it.next()) |entry| {
+                if (entry.kind == .directory) {
+                    const key = try std.fmt.allocPrint(self.allocator, "{s}|{s}", .{ root.tag, entry.name });
+                    try set.put(key, {});
+                }
+            }
+        }
+        return set;
+    }
+
+    fn snapshotRegistry(self: *const Engine) !std.StringHashMap(void) {
+        var set = std.StringHashMap(void).init(self.allocator);
+        var hKey: w32.HKEY = undefined;
+        // HKEY_CURRENT_USER = 0x80000001
+        const hkcu: w32.HKEY = @ptrFromInt(0x80000001);
+        if (RegOpenKeyExA(hkcu, "Software", 0, 0x20019, &hKey) == 0) { // KEY_READ = 0x20019
+            defer _ = RegCloseKey(hKey);
+            var index: w32.DWORD = 0;
+            var nameBuf: [256]u8 = undefined;
+            while (true) {
+                var nameLen: w32.DWORD = 256;
+                const res = RegEnumKeyExA(hKey, index, &nameBuf, &nameLen, null, null, null, null);
+                if (res != 0) break; // ERROR_NO_MORE_ITEMS hoặc lỗi khác
+                
+                const name = nameBuf[0..nameLen];
+                const key = try std.fmt.allocPrint(self.allocator, "HKEY_CURRENT_USER\\Software\\{s}", .{name});
+                try set.put(key, {});
+                index += 1;
+            }
+        }
+        return set;
+    }
+
+    fn syncRegistry(self: *const Engine, keys: [][]const u8) !void {
+        if (keys.len == 0) return;
+        
+        std.fs.deleteFileAbsolute(self.reg_backup) catch {};
+        
+        const tmp_dir = std.os.windows.GetTempPathAlloc(self.allocator) catch "C:\\Temp";
+        const temp_reg = try std.fs.path.join(self.allocator, &[_][]const u8{ tmp_dir, "port_tmp.reg" });
+
+        for (keys) |key| {
+            var exp_cmd = try std.process.Child.init(&[_][]const u8{ "reg", "export", key, temp_reg, "/y" }, self.allocator);
+            exp_cmd.spawn_flags = std.process.Child.SpawnFlags{ .creation_flags = CREATE_NO_WINDOW };
+            _ = exp_cmd.spawnAndWait() catch {};
+
+            if (std.fs.openFileAbsolute(temp_reg, .{})) |tmp_file| {
+                const content = try tmp_file.readToEndAlloc(self.allocator, 10 * 1024 * 1024);
+                tmp_file.close();
+
+                var out_file = std.fs.cwd().openFile(self.reg_backup, .{ .mode = .read_write }) catch blk: {
+                    break :blk try std.fs.cwd().createFile(self.reg_backup, .{});
+                };
+                try out_file.seekFromEnd(0);
+                try out_file.writer().writeAll(content);
+                out_file.close();
+
+                std.fs.deleteFileAbsolute(temp_reg) catch {};
+            }
+
+            var del_cmd = try std.process.Child.init(&[_][]const u8{ "reg", "delete", key, "/f" }, self.allocator);
+            del_cmd.spawn_flags = std.process.Child.SpawnFlags{ .creation_flags = CREATE_NO_WINDOW };
+            _ = del_cmd.spawnAndWait() catch {};
+        }
+    }
+};
+
+// --- Helpers ---
+fn isNoise(name: []const u8) bool {
+    var lower_buf: [256]u8 = undefined;
+    const len = @min(name.len, 256);
+    const lower = std.ascii.lowerString(&lower_buf, name[0..len]);
+    for (NOISE_KEYWORDS) |kw| {
+        if (std.mem.indexOf(u8, lower, kw) != null) return true;
+    }
+    return false;
+}
+
+fn promptSelect(alloc: std.mem.Allocator, items: [][]const u8, prompt: []const u8) !usize {
+    const stdout = std.io.getStdOut().writer();
+    const stdin = std.io.getStdIn().reader();
+    
+    try stdout.print("{s}:\n", .{prompt});
+    for (items, 0..) |item, i| {
+        try stdout.print("[{d}] {s}\n", .{ i, item });
+    }
+    
+    var buf: [32]u8 = undefined;
+    while (true) {
+        try stdout.print("Enter choice (0-{d}): ", .{items.len - 1});
+        if (try stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
+            const trimmed = std.mem.trim(u8, line, " \r");
+            if (std.fmt.parseInt(usize, trimmed, 10)) |val| {
+                if (val < items.len) return val;
+            } else |_| {}
+        }
     }
 }
 
-fn showConsole() void {
-    _ = AllocConsole();
-    if (GetConsoleWindow()) |hwnd| {
-        _ = ShowWindow(hwnd, 5); // SW_SHOW
+fn promptMultiSelect(alloc: std.mem.Allocator, items: [][]const u8, prompt: []const u8) ![]usize {
+    const stdout = std.io.getStdOut().writer();
+    const stdin = std.io.getStdIn().reader();
+    
+    try stdout.print("{s}:\n", .{prompt});
+    for (items, 0..) |item, i| {
+        try stdout.print("[{d}] {s}\n", .{ i, item });
     }
+    
+    var selected = std.ArrayList(usize).init(alloc);
+    var buf: [256]u8 = undefined;
+    try stdout.print("Enter indices separated by space (e.g. '0 2'): ", .{});
+    
+    if (try stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
+        const trimmed = std.mem.trim(u8, line, " \r");
+        var it = std.mem.splitAny(u8, trimmed, " ,");
+        while (it.next()) |part| {
+            if (part.len == 0) continue;
+            if (std.fmt.parseInt(usize, part, 10)) |val| {
+                if (val < items.len) try selected.append(val);
+            } else |_| {}
+        }
+    }
+    return selected.toOwnedSlice();
 }
 
-fn createDir(alloc: std.mem.Allocator, path: []const u8) void {
-    if (std.unicode.utf8ToUtf16LeAllocZ(alloc, path)) |path_w| {
-        defer alloc.free(path_w);
-        _ = CreateDirectoryW(path_w.ptr, null);
-    } else |_| {}
-}
-
-fn readFileAlloc(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    const path_w = try std.unicode.utf8ToUtf16LeAllocZ(alloc, path);
-    defer alloc.free(path_w);
-    
-    const handle = CreateFileW(path_w.ptr, GENERIC_READ, 1, null, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null);
-    if (handle == INVALID_HANDLE_VALUE) return error.FileNotFound;
-    defer _ = CloseHandle(handle);
-    
-    const size = GetFileSize(handle, null);
-    if (size == 0xFFFFFFFF) return error.GetFileSizeFailed;
-    
-    const buf = try alloc.alloc(u8, size);
-    var bytesRead: u32 = 0;
-    if (ReadFile(handle, buf.ptr, size, &bytesRead, null) == 0) return error.ReadFailed;
-    return buf[0..bytesRead];
-}
-
-fn writeFile(alloc: std.mem.Allocator, path: []const u8, data: []const u8) !void {
-    const path_w = try std.unicode.utf8ToUtf16LeAllocZ(alloc, path);
-    defer alloc.free(path_w);
-    
-    const handle = CreateFileW(path_w.ptr, GENERIC_WRITE, 0, null, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, null);
-    if (handle == INVALID_HANDLE_VALUE) return error.CreateFileFailed;
-    defer _ = CloseHandle(handle);
-    
-    var bytesWritten: u32 = 0;
-    if (WriteFile(handle, data.ptr, @intCast(data.len), &bytesWritten, null) == 0) return error.WriteFailed;
-}
-
-fn fileExists(alloc: std.mem.Allocator, path: []const u8) bool {
-    const path_w = std.unicode.utf8ToUtf16LeAllocZ(alloc, path) catch return false;
-    defer alloc.free(path_w);
-    const attr = GetFileAttributesW(path_w.ptr);
-    return attr != 0xFFFFFFFF;
-}
-
-// --- MAIN LOGIC ---
 pub fn main() !void {
+    // Setup memory arena for easy cleanup
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // 1. Get exact path of this executable
-    var exe_path_w: [4096]u16 = undefined;
-    const len = GetModuleFileNameW(null, &exe_path_w, 4096);
-    if (len == 0) return error.GetModuleFileNameFailed;
+    _ = std.process.Child.spawnAndWait(&std.process.Child.init(&[_][]const u8{"cmd", "/c", "chcp 65001"}, alloc)) catch {};
 
-    const exe_path = try std.unicode.utf16LeToUtf8Alloc(alloc, exe_path_w[0..len]);
-    const base_dir_path = std.fs.path.dirname(exe_path) orelse return error.NoExeDir;
-
-    // 2. Set Current Directory to base_dir_path (Đồng bộ tuyệt đối đường dẫn hiện tại)
-    const base_dir_w = try std.unicode.utf8ToUtf16LeAllocZ(alloc, base_dir_path);
-    _ = SetCurrentDirectoryW(base_dir_w.ptr);
-
-    const p_data = try std.fs.path.join(alloc, &.{ base_dir_path, "Portable_Data" });
-
-    // 3. Ensure base directories exist (Gọi API Windows tạo file/thư mục nền)
-    createDir(alloc, "Portable_Data");
-    createDir(alloc, "Portable_Data\\config");
-    createDir(alloc, "Portable_Data\\Registry");
-
-    // 4. Try loading config
-    var has_config = false;
-    if (readFileAlloc(alloc, "Portable_Data\\config\\config.json")) |content| {
-        const parsed = std.json.parseFromSlice(AppConfig, alloc, content, .{ .ignore_unknown_fields = true }) catch null;
-        if (parsed != null) {
-            has_config = true;
-            try runSandbox(alloc, base_dir_path, p_data, parsed.?.value);
+    var engine = try Engine.init(alloc);
+    
+    if (std.fs.cwd().openFile(engine.cfg_file, .{})) |file| {
+        const content = try file.readToEndAlloc(alloc, 1024 * 1024);
+        file.close();
+        
+        if (std.json.parseFromSlice(AppConfig, alloc, content, .{ .ignore_unknown_fields = true })) |parsed| {
+            try run_sandbox(&engine, parsed.value);
+            return;
+        } else |_| {
+            // Failed to parse config, fallback to learning mode
         }
     } else |_| {}
 
-    if (!has_config) {
-        try learningMode(alloc, base_dir_path, p_data);
-    }
+    try learning_mode(&engine, alloc);
 }
 
-fn setupEnvMap(alloc: std.mem.Allocator, p_data: []const u8) !std.process.EnvMap {
-    var env_map = try std.process.getEnvMap(alloc);
-    const roam = try std.fs.path.join(alloc, &.{ p_data, "AppData", "Roaming" });
-    const local = try std.fs.path.join(alloc, &.{ p_data, "AppData", "Local" });
-    const docs = try std.fs.path.join(alloc, &.{ p_data, "Documents" });
-
-    createDir(alloc, "Portable_Data\\AppData");
-    createDir(alloc, "Portable_Data\\AppData\\Roaming");
-    createDir(alloc, "Portable_Data\\AppData\\Local");
-    createDir(alloc, "Portable_Data\\Documents");
-
-    try env_map.put("APPDATA", roam);
-    try env_map.put("LOCALAPPDATA", local);
-    try env_map.put("USERPROFILE", p_data);
-    try env_map.put("DOCUMENTS", docs);
-
-    return env_map;
-}
-
-fn learningMode(alloc: std.mem.Allocator, base_dir_path: []const u8, p_data: []const u8) !void {
-    showConsole();
-    const stdout = std.io.getStdOut().writer();
-    const stdin = std.io.getStdIn().reader();
-
-    // Lặp tìm File EXE hoàn toàn qua API FindFirstFileW của Windows (bất tử với lỗi fs)
-    var exe_list = std.ArrayList([]const u8).init(alloc);
-    var findData: WIN32_FIND_DATAW = undefined;
-    const search_w = try std.unicode.utf8ToUtf16LeAllocZ(alloc, "*.exe");
-    const handle = FindFirstFileW(search_w.ptr, &findData);
+fn learning_mode(engine: *const Engine, alloc: std.mem.Allocator) !void {
+    const cur_exe_path = try std.fs.selfExePathAlloc(alloc);
+    const cur_exe_name = std.fs.path.basename(cur_exe_path);
     
-    if (handle != INVALID_HANDLE_VALUE) {
-        defer _ = FindClose(handle);
-        while (true) {
-            if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-                var flen: usize = 0;
-                while (findData.cFileName[flen] != 0) flen += 1;
-                const name = try std.unicode.utf16LeToUtf8Alloc(alloc, findData.cFileName[0..flen]);
-                
-                if (!std.mem.eql(u8, name, "portable_run.exe")) {
-                    try exe_list.append(name);
-                }
+    var dir = try std.fs.cwd().openDir(".", .{ .iterate = true });
+    var exes = std.ArrayList([]const u8).init(alloc);
+    var it = dir.iterate();
+    
+    while (try it.next()) |entry| {
+        if (entry.kind == .file and std.ascii.endsWithIgnoreCase(entry.name, ".exe")) {
+            if (!std.ascii.eqlIgnoreCase(entry.name, cur_exe_name)) {
+                try exes.append(try alloc.dupe(u8, entry.name));
             }
-            if (FindNextFileW(handle, &findData) == 0) break;
         }
     }
 
-    if (exe_list.items.len == 0) {
-        try stdout.print("[ERROR] No executable found in {s}.\n", .{base_dir_path});
+    if (exes.items.len == 0) {
+        win_api.focus();
+        std.debug.print("[ERROR] No executable found.\n", .{});
         std.time.sleep(3 * std.time.ns_per_s);
         return;
     }
 
-    var selected_exe: []const u8 = "";
-    if (exe_list.items.len == 1) {
-        selected_exe = exe_list.items[0];
+    try engine.bootstrap();
+
+    var selected_exe: []const u8 = undefined;
+    if (exes.items.len == 1) {
+        win_api.hide();
+        selected_exe = exes.items[0];
     } else {
-        try stdout.print("Select target executable:\n", .{});
-        for (exe_list.items, 0..) |exe_name, i| {
-            try stdout.print("{d}: {s}\n", .{ i, exe_name });
+        win_api.focus();
+        const choice = try promptSelect(alloc, exes.items, "Select target");
+        win_api.hide();
+        selected_exe = exes.items[choice];
+    }
+
+    var reg_before = try engine.snapshotRegistry();
+    var folders_before = try engine.snapshotFolders();
+
+    const new_env = try engine.getEnvMap();
+    win_api.grant_focus();
+    win_api.hide();
+
+    // Spawn child
+    var child = std.process.Child.init(&[_][]const u8{selected_exe}, alloc);
+    child.env_map = &new_env;
+    _ = try child.spawnAndWait();
+    
+    std.time.sleep(1 * std.time.ns_per_s);
+
+    var reg_after = try engine.snapshotRegistry();
+    var folders_after = try engine.snapshotFolders();
+
+    var reg_candidates = std.ArrayList([]const u8).init(alloc);
+    var reg_it = reg_after.keyIterator();
+    while (reg_it.next()) |k| {
+        if (!reg_before.contains(k.*) and !isNoise(k.*)) {
+            try reg_candidates.append(k.*);
         }
-        try stdout.print("Enter index: ", .{});
-        
-        var buf: [16]u8 = undefined;
-        if (try stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
-            const trimmed = std.mem.trim(u8, line, " \r\n");
-            const idx = std.fmt.parseInt(usize, trimmed, 10) catch 0;
-            if (idx < exe_list.items.len) {
-                selected_exe = exe_list.items[idx];
-            } else {
-                selected_exe = exe_list.items[0];
+    }
+
+    var stubborn_candidates = std.ArrayList(StubbornFolder).init(alloc);
+    for (engine.sys_roots) |root| {
+        var s_dir = std.fs.openDirAbsolute(root.path, .{ .iterate = true }) catch continue;
+        var s_it = s_dir.iterate();
+        while (try s_it.next()) |entry| {
+            if (entry.kind != .directory) continue;
+            if (isNoise(entry.name)) continue;
+            
+            const key = try std.fmt.allocPrint(alloc, "{s}|{s}", .{ root.tag, entry.name });
+            if (!folders_before.contains(key) and folders_after.contains(key)) {
+                try stubborn_candidates.append(.{ .tag = root.tag, .name = try alloc.dupe(u8, entry.name) });
             }
         }
     }
 
-    try stdout.print("\n[INFO] Starting {s} in learning mode...\n", .{selected_exe});
-    
-    var env_map = try setupEnvMap(alloc, p_data);
-    defer env_map.deinit();
+    if (reg_candidates.items.len == 0 and stubborn_candidates.items.len == 0) {
+        try saveConfig(alloc, engine.cfg_file, selected_exe, &[_][]const u8{}, &[_]StubbornFolder{});
+        return;
+    }
 
-    const exe_abs = try std.fs.path.join(alloc, &.{ base_dir_path, selected_exe });
-    var child = std.process.Child.init(&.{ exe_abs }, alloc);
-    child.env_map = &env_map;
-    _ = try child.spawnAndWait();
+    win_api.focus();
+    var selected_reg = std.ArrayList([]const u8).init(alloc);
+    if (reg_candidates.items.len > 0) {
+        const indices = try promptMultiSelect(alloc, reg_candidates.items, "Select Registry?");
+        for (indices) |i| try selected_reg.append(reg_candidates.items[i]);
+    }
 
-    var reg_keys = std.ArrayList([]const u8).init(alloc);
-    var stubborn_folders = std.ArrayList(StubbornFolder).init(alloc);
+    var selected_folders = std.ArrayList(StubbornFolder).init(alloc);
+    if (stubborn_candidates.items.len > 0) {
+        var names = std.ArrayList([]const u8).init(alloc);
+        for (stubborn_candidates.items) |f| {
+            try names.append(try std.fmt.allocPrint(alloc, "[{s}] {s}", .{ f.tag, f.name }));
+        }
+        const indices = try promptMultiSelect(alloc, names.items, "Select Folders?");
+        for (indices) |i| {
+            const f = stubborn_candidates.items[i];
+            
+            var origin: []const u8 = undefined;
+            for (engine.sys_roots) |r| {
+                if (std.mem.eql(u8, r.tag, f.tag)) {
+                    origin = try std.fs.path.join(alloc, &[_][]const u8{ r.path, f.name });
+                    break;
+                }
+            }
+            const dest = try engine.mapPortPath(f.tag, f.name);
+            
+            if (std.fs.path.dirname(dest)) |parent| try std.fs.cwd().makePath(parent);
+            
+            var robo = std.process.Child.init(&[_][]const u8{ "robocopy", origin, dest, "/E", "/MOVE", "/NFL", "/NDL", "/NJH", "/NJS", "/R:3", "/W:1" }, alloc);
+            robo.spawn_flags = std.process.Child.SpawnFlags{ .creation_flags = CREATE_NO_WINDOW };
+            _ = robo.spawnAndWait() catch {};
+            
+            try selected_folders.append(f);
+        }
+    }
 
-    const cfg = AppConfig{
-        .selected_exe = selected_exe,
-        .registry_keys = try reg_keys.toOwnedSlice(),
-        .stubborn_folders = try stubborn_folders.toOwnedSlice(),
-    };
-
-    var json_str = std.ArrayList(u8).init(alloc);
-    try std.json.stringify(cfg, .{ .whitespace = .indent_4 }, json_str.writer());
-    try writeFile(alloc, "Portable_Data\\config\\config.json", json_str.items);
-
-    try stdout.print("[INFO] Config saved to Portable_Data\\config\\config.json\n", .{});
-    std.time.sleep(2 * std.time.ns_per_s);
+    try saveConfig(alloc, engine.cfg_file, selected_exe, selected_reg.items, selected_folders.items);
+    try engine.syncRegistry(selected_reg.items);
 }
 
-fn runSandbox(alloc: std.mem.Allocator, base_dir_path: []const u8, p_data: []const u8, config: AppConfig) !void {
-    // hideConsole();
-    
-    const reg_backup_abs = try std.fs.path.join(alloc, &.{ p_data, "Registry", "data.reg" });
-    if (fileExists(alloc, "Portable_Data\\Registry\\data.reg")) {
-        var import_cmd = std.process.Child.init(&.{ "reg", "import", reg_backup_abs }, alloc);
-        _ = try import_cmd.spawnAndWait();
+fn run_sandbox(engine: *const Engine, config: AppConfig) !void {
+    const alloc = engine.allocator;
+    try engine.bootstrap();
+
+    if (config.registry_keys.len == 0 and config.stubborn_folders.len == 0) {
+        const new_env = try engine.getEnvMap();
+        win_api.grant_focus();
+        var child = std.process.Child.init(&[_][]const u8{config.selected_exe}, alloc);
+        child.env_map = &new_env;
+        _ = try child.spawnAndWait();
+        return;
     }
 
-    var env_map = try setupEnvMap(alloc, p_data);
-    defer env_map.deinit();
+    if (std.fs.cwd().access(engine.reg_backup, .{})) |_| {
+        var imp = std.process.Child.init(&[_][]const u8{ "reg", "import", engine.reg_backup }, alloc);
+        imp.spawn_flags = std.process.Child.SpawnFlags{ .creation_flags = CREATE_NO_WINDOW };
+        _ = imp.spawnAndWait() catch {};
+    } else |_| {}
 
-    for (config.stubborn_folders) |folder| {
-        _ = folder; 
+    var junctions = std.ArrayList([]const u8).init(alloc);
+    for (config.stubborn_folders) |f| {
+        var origin: []const u8 = undefined;
+        for (engine.sys_roots) |r| {
+            if (std.mem.eql(u8, r.tag, f.tag)) {
+                origin = try std.fs.path.join(alloc, &[_][]const u8{ r.path, f.name });
+                break;
+            }
+        }
+        const dest = try engine.mapPortPath(f.tag, f.name);
+        
+        if (std.fs.cwd().access(origin, .{})) |_| {} else |_| {
+            // Create junction using cmd mklink /J
+            var mklink = std.process.Child.init(&[_][]const u8{ "cmd", "/c", "mklink", "/J", origin, dest }, alloc);
+            mklink.spawn_flags = std.process.Child.SpawnFlags{ .creation_flags = CREATE_NO_WINDOW };
+            _ = mklink.spawnAndWait() catch {};
+            try junctions.append(origin);
+        }
     }
 
-    const exe_abs = try std.fs.path.join(alloc, &.{ base_dir_path, config.selected_exe });
-    var child = std.process.Child.init(&.{ exe_abs }, alloc);
-    child.env_map = &env_map;
+    const new_env = try engine.getEnvMap();
+    win_api.grant_focus();
+    win_api.hide();
+
+    var child = std.process.Child.init(&[_][]const u8{config.selected_exe}, alloc);
+    child.env_map = &new_env;
     _ = try child.spawnAndWait();
 
-    for (config.registry_keys) |key| {
-        var export_cmd = std.process.Child.init(&.{ "reg", "export", key, reg_backup_abs, "/y" }, alloc);
-        _ = try export_cmd.spawnAndWait();
-        
-        var del_cmd = std.process.Child.init(&.{ "reg", "delete", key, "/f" }, alloc);
-        _ = try del_cmd.spawnAndWait();
+    for (junctions.items) |j| {
+        std.fs.deleteDirAbsolute(j) catch {};
     }
+
+    try engine.syncRegistry(config.registry_keys);
+}
+
+fn saveConfig(alloc: std.mem.Allocator, path: []const u8, exe: []const u8, reg: [][]const u8, folders: []const StubbornFolder) !void {
+    const config = AppConfig{
+        .selected_exe = exe,
+        .registry_keys = reg,
+        .stubborn_folders = folders,
+    };
+    var file = try std.fs.cwd().createFile(path, .{});
+    defer file.close();
+    try std.json.stringify(config, .{ .whitespace = .indent_4 }, file.writer());
 }

@@ -4,10 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tool_name:
-        description: 'Tên thư mục (Ví dụ: portable_run)'
+        description: 'Tên thư mục (Ví dụ: _template)'
         required: true
         type: string
-        default: 'portable_run'
 
 jobs:
   build:
@@ -15,7 +14,6 @@ jobs:
     defaults:
       run:
         working-directory: ./zig-tools
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -23,14 +21,13 @@ jobs:
       - name: Setup Zig Compiler
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.13.0
 
       - name: Build ReleaseFast
         shell: pwsh
         run: |
           $toolName = "${{ inputs.tool_name }}"
           cd $toolName
-
           zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows
 
       - name: Prepare Artifact
@@ -38,10 +35,8 @@ jobs:
         run: |
           $toolName = "${{ inputs.tool_name }}"
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
-
           $sourcePath = "$toolName/zig-out/bin/*.exe"
           $exeFile = Get-ChildItem $sourcePath | Select-Object -First 1
-
           if ($exeFile) {
              Write-Host "Found EXE: $($exeFile.Name)"
              Copy-Item $exeFile.FullName -Destination "dist/$toolName.exe"
