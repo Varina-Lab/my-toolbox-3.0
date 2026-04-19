@@ -1,19 +1,20 @@
 const std = @import("std");
 
-// --- Win32 API Bindings (Tự định nghĩa để không phụ thuộc vào std.os.windows biến động) ---
+// --- Win32 API Bindings ---
 const HWND = ?*anyopaque;
 const DWORD = u32;
 const BOOL = i32;
 
-extern "kernel32" fn AllocConsole() callconv(.C) BOOL;
-extern "kernel32" fn GetConsoleWindow() callconv(.C) HWND;
-extern "kernel32" fn GetCurrentThreadId() callconv(.C) DWORD;
-extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: i32) callconv(.C) BOOL;
-extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(.C) BOOL;
-extern "user32" fn GetForegroundWindow() callconv(.C) HWND;
-extern "user32" fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: ?*DWORD) callconv(.C) DWORD;
-extern "user32" fn AttachThreadInput(idAttach: DWORD, idAttachTo: DWORD, fAttach: BOOL) callconv(.C) BOOL;
-extern "user32" fn AllowSetForegroundWindow(dwProcessId: DWORD) callconv(.C) BOOL;
+// CẬP NHẬT: Zig 0.15 ép buộc calling convention phải viết thường thành '.c'
+extern "kernel32" fn AllocConsole() callconv(.c) BOOL;
+extern "kernel32" fn GetConsoleWindow() callconv(.c) HWND;
+extern "kernel32" fn GetCurrentThreadId() callconv(.c) DWORD;
+extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: i32) callconv(.c) BOOL;
+extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(.c) BOOL;
+extern "user32" fn GetForegroundWindow() callconv(.c) HWND;
+extern "user32" fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: ?*DWORD) callconv(.c) DWORD;
+extern "user32" fn AttachThreadInput(idAttach: DWORD, idAttachTo: DWORD, fAttach: BOOL) callconv(.c) BOOL;
+extern "user32" fn AllowSetForegroundWindow(dwProcessId: DWORD) callconv(.c) BOOL;
 
 const win_api = struct {
     fn hide() void {
@@ -152,14 +153,16 @@ fn learning_mode(allocator: std.mem.Allocator, engine: Engine) !void {
         .stubborn_folders = &[_]StubbornFolder{},
     };
     
-    // CẬP NHẬT: Thay thế stringifyAlloc bằng quy trình chuẩn mới của Zig 0.15
-    var json_str = std.ArrayList(u8).init(allocator);
-    defer json_str.deinit();
-    try std.json.stringify(empty_config, .{ .whitespace = .indent_4 }, json_str.writer());
+    // CẬP NHẬT: Chuyển đổi json_str sang dùng ArrayListUnmanaged hoàn toàn
+    var json_str: std.ArrayListUnmanaged(u8) = .empty;
+    defer json_str.deinit(allocator);
+    
+    // Truyền allocator vào hàm writer để cấp phát bộ nhớ khi stringify
+    try std.json.stringify(empty_config, .{ .whitespace = .indent_4 }, json_str.writer(allocator));
     
     if (std.fs.cwd().createFile(engine.cfg_file, .{ .truncate = true })) |file| {
         defer file.close();
-        try file.writeAll(json_str.items); // Ghi nội dung json từ ArrayList ra file
+        try file.writeAll(json_str.items);
     } else |err| {
         std.debug.print("Failed to write config: {}\n", .{err});
     }
