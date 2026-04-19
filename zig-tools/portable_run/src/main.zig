@@ -12,11 +12,13 @@ const AppConfig = struct {
     stubborn_folders: []StubbornFolder,
 };
 
-// WinAPI declarations (SỬA LỖI: dùng win.WINAPI thay vì .C)
-extern "kernel32" fn GetConsoleWindow() callconv(win.WINAPI) ?*anyopaque;
-extern "user32" fn ShowWindow(hWnd: ?*anyopaque, nCmdShow: i32) callconv(win.WINAPI) win.BOOL;
-extern "kernel32" fn AllocConsole() callconv(win.WINAPI) win.BOOL;
-extern "kernel32" fn GetModuleFileNameW(hModule: ?*anyopaque, lpFilename: [*]u16, nSize: u32) callconv(win.WINAPI) u32;
+// WinAPI declarations 
+// SỬA LỖI DỨT ĐIỂM: Xóa bỏ hoàn toàn "callconv(...)" để Zig tự suy luận chuẩn gọi C mặc định.
+// Không còn phụ thuộc vào bất kỳ tên biến Enum nào của phiên bản Zig đang dùng nữa.
+extern "kernel32" fn GetConsoleWindow() ?*anyopaque;
+extern "user32" fn ShowWindow(hWnd: ?*anyopaque, nCmdShow: i32) win.BOOL;
+extern "kernel32" fn AllocConsole() win.BOOL;
+extern "kernel32" fn GetModuleFileNameW(hModule: ?*anyopaque, lpFilename: [*]u16, nSize: u32) u32;
 
 fn hideConsole() void {
     const hwnd = GetConsoleWindow();
