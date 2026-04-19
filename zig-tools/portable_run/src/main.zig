@@ -37,8 +37,9 @@ pub fn main() !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // SỬA LỖI: Dùng std.process.getCwdAlloc thay vì std.os.getwd (Zig 0.16.0 API)
-    const cwd = try std.process.getCwdAlloc(alloc);
+    // SỬA LỖI: Dùng std.fs.cwd().realpathAlloc thay vì std.process.getCwdAlloc
+    const cwd = try std.fs.cwd().realpathAlloc(alloc, ".");
+    
     const p_data = try std.fs.path.join(alloc, &.{ cwd, "Portable_Data" });
     const cfg_file = try std.fs.path.join(alloc, &.{ p_data, "config", "config.json" });
 
@@ -52,7 +53,6 @@ pub fn main() !void {
         defer file.close();
         const content = try file.readToEndAlloc(alloc, 1024 * 1024);
         
-        // SỬA LỖI: Đổi var thành const vì parsed không bị thay đổi
         const parsed = std.json.parseFromSlice(AppConfig, alloc, content, .{ .ignore_unknown_fields = true }) catch null;
         if (parsed != null) {
             has_config = true;
@@ -61,7 +61,6 @@ pub fn main() !void {
     } else |_| {}
 
     if (!has_config) {
-        // SỬA LỖI: Loại bỏ tham số cwd bị thừa
         try learningMode(alloc, p_data, cfg_file);
     }
 }
@@ -84,7 +83,6 @@ fn setupEnvMap(alloc: std.mem.Allocator, p_data: []const u8) !std.process.EnvMap
     return env_map;
 }
 
-// SỬA LỖI: Xoá tham số cwd vì không sử dụng trong hàm
 fn learningMode(alloc: std.mem.Allocator, p_data: []const u8, cfg_file: []const u8) !void {
     showConsole();
     const stdout = std.io.getStdOut().writer();
@@ -144,7 +142,6 @@ fn learningMode(alloc: std.mem.Allocator, p_data: []const u8, cfg_file: []const 
     var reg_keys = std.ArrayList([]const u8).init(alloc);
     var stubborn_folders = std.ArrayList(StubbornFolder).init(alloc);
 
-    // SỬA LỖI: Đổi var thành const vì cfg không bị thay đổi
     const cfg = AppConfig{
         .selected_exe = selected_exe,
         .registry_keys = try reg_keys.toOwnedSlice(),
@@ -154,7 +151,6 @@ fn learningMode(alloc: std.mem.Allocator, p_data: []const u8, cfg_file: []const 
     var out_file = try std.fs.cwd().createFile(cfg_file, .{});
     defer out_file.close();
 
-    // SỬA LỖI: Xoá biến ws không được dùng tới. Trực tiếp chèn tuỳ chọn indent vào hàm stringify
     try std.json.stringify(cfg, .{ .whitespace = .indent_4 }, out_file.writer());
 
     try stdout.print("[INFO] Config saved to {s}\n", .{cfg_file});
